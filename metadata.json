@@ -1,0 +1,6 @@
+{
+  "name": "RAMP - Recruiter & Applicant Matching Platform",
+  "description": "Reversing the traditional job board: verified candidates remain passive while verified employers discover credentials and send direct job invites.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
