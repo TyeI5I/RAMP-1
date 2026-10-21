@@ -94,23 +94,42 @@ Always provide structured, clear, and actionable feedback. When drafting or edit
             parts: [{ text: m.content }],
           }));
 
-          const response = await ai.models.generateContent({
-            model: model || 'gemini-3.8-flash',
-            contents: formattedContents,
-            config: {
-              systemInstruction,
-              temperature: 0.7,
-            },
-          });
-
-          const replyText = response.text || 'I analyzed your request and have recommendations for your profile.';
-          return res.json({ text: replyText, modelUsed: model });
+          let replyText = '';
+          let usedModel = model || 'gemini-3.8-flash';
+          const careerModels = [
+            model || 'gemini-3.8-flash',
+            'gemini-3.6-flash',
+            'gemini-3.5-flash-lite',
+          ];
+          let lastErr: any = null;
+          for (const m of careerModels) {
+            try {
+              const response = await ai.models.generateContent({
+                model: m,
+                contents: formattedContents,
+                config: { systemInstruction, temperature: 0.7 },
+              });
+              replyText = response.text || '';
+              if (replyText) { usedModel = m; break; }
+            } catch (err: any) {
+              console.warn(`Career Studio model ${m} failed:`, err?.message);
+              lastErr = err;
+            }
+          }
+          if (!replyText) {
+            throw lastErr || new Error('All Gemini models failed for Career Studio');
+          }
+          return res.json({ text: replyText, modelUsed: usedModel });
         } catch (apiError: any) {
-          console.warn('Gemini API call failed, generating intelligent contextual fallback:', apiError?.message);
+          console.error('Career Studio: all Gemini models failed:', apiError?.message);
+          return res.status(503).json({
+            error: 'AI service temporarily unavailable. Please try again.',
+            detail: apiError?.message || 'All Gemini models failed',
+          });
         }
       }
 
-      // Intelligent Contextual Fallback if GEMINI_API_KEY is not set or network issue
+      // Fallback ONLY when no Gemini API key is configured at all
       const lastMessage = messages[messages.length - 1].content.toLowerCase();
       let fallbackText = '';
 
