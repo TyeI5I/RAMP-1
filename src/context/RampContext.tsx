@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useCallback, useContext, useState, useEffect } from 'react';
 import {
   CandidateProfile,
   EmployerProfile,
@@ -12,7 +12,6 @@ import {
   SubscriptionTier,
   BillingCadence,
   CredentialOcrData,
-  InvoiceRecord,
 } from '../types/ramp';
 import {
   INITIAL_CANDIDATES,
@@ -23,8 +22,25 @@ import {
   SAMPLE_DIPLOMA_IMAGE,
 } from '../data/seedData';
 import { calculateLifecycleStatus, generateNotificationForLifecycle } from '../utils/lifecycle';
+import type { Session } from '@supabase/supabase-js';
+import { supabase } from '../lib/supabase';
 
 interface RampContextType {
+  isDemoMode: boolean;
+  authSession: Session | null;
+  authReady: boolean;
+  marketplaceReady: boolean;
+  hasMarketplaceProfile: boolean;
+  marketplaceError: string | null;
+  clearMarketplaceError: () => void;
+  signIn: (email: string, password: string) => Promise<void>;
+  signUp: (email: string, password: string, role: 'candidate' | 'employer') => Promise<void>;
+  resetPassword: (email: string) => Promise<void>;
+  updatePassword: (password: string) => Promise<void>;
+  signOut: () => Promise<void>;
+  refreshMarketplace: () => Promise<void>;
+  startPersonaVerification: (type: 'identity' | 'employer') => Promise<string>;
+
   // Active Persona
   currentRole: UserRole;
   setCurrentRole: (role: UserRole) => void;
@@ -50,18 +66,21 @@ interface RampContextType {
   uploadCandidateCredential: (
     fileDataUrl: string,
     extractedData?: Partial<CredentialOcrData>
-  ) => Promise<CredentialOcrData>;
+  ) => Promise<CredentialOcrData | undefined>;
   registerCandidate: (data: Partial<CandidateProfile>) => CandidateProfile;
 
   // Employer Actions
   registerEmployer: (data: Partial<EmployerProfile>) => EmployerProfile;
   updateEmployerProfile: (updated: Partial<EmployerProfile>) => void;
-  upgradeSubscription: (
+  activateSubscription: (
     tier: SubscriptionTier,
     cadence: BillingCadence,
-    invoiceData?: Partial<InvoiceRecord>,
+    activeUntil: string,
+    stripeCustomerId: string,
+    stripeSubscriptionId: string,
     alertCategories?: JobCategory[]
-  ) => InvoiceRecord;
+  ) => void;
+  deactivateSubscription: () => void;
   sendJobInvite: (inviteData: Omit<JobInvite, 'id' | 'sentAt' | 'viewedByCandidate'>) => JobInvite;
   respondToInvite: (inviteId: string, status: 'accepted' | 'declined') => void;
   markInviteContacted: (inviteId: string, contacted: boolean) => void;
@@ -94,8 +113,10 @@ const RampContext = createContext<RampContextType | null>(null);
 const STORAGE_KEY_PREFIX = 'ramp_platform_v2_';
 
 export const RampProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const isDemoMode = import.meta.env.DEV;
   // Initialize state from localStorage or seeds
   const [candidates, setCandidates] = useState<CandidateProfile[]>(() => {
+    if (!isDemoMode) return [];
     try {
       const stored = localStorage.getItem(`${STORAGE_KEY_PREFIX}candidates`);
       const parsed = stored ? JSON.parse(stored) : INITIAL_CANDIDATES;
@@ -112,6 +133,7 @@ export const RampProvider: React.FC<{ children: React.ReactNode }> = ({ children
   });
 
   const [employers, setEmployers] = useState<EmployerProfile[]>(() => {
+    if (!isDemoMode) return [];
     try {
       const stored = localStorage.getItem(`${STORAGE_KEY_PREFIX}employers`);
       return stored ? JSON.parse(stored) : INITIAL_EMPLOYERS;
@@ -121,6 +143,7 @@ export const RampProvider: React.FC<{ children: React.ReactNode }> = ({ children
   });
 
   const [jobInvites, setJobInvites] = useState<JobInvite[]>(() => {
+    if (!isDemoMode) return [];
     try {
       const stored = localStorage.getItem(`${STORAGE_KEY_PREFIX}invites`);
       return stored ? JSON.parse(stored) : INITIAL_JOB_INVITES;
@@ -130,6 +153,7 @@ export const RampProvider: React.FC<{ children: React.ReactNode }> = ({ children
   });
 
   const [notifications, setNotifications] = useState<PushNotification[]>(() => {
+    if (!isDemoMode) return [];
     try {
       const stored = localStorage.getItem(`${STORAGE_KEY_PREFIX}notifications`);
       return stored ? JSON.parse(stored) : INITIAL_NOTIFICATIONS;
@@ -139,6 +163,7 @@ export const RampProvider: React.FC<{ children: React.ReactNode }> = ({ children
   });
 
   const [emailLogs, setEmailLogs] = useState<EmailLog[]>(() => {
+    if (!isDemoMode) return [];
     try {
       const stored = localStorage.getItem(`${STORAGE_KEY_PREFIX}emails`);
       return stored ? JSON.parse(stored) : INITIAL_EMAILS;
@@ -148,35 +173,284 @@ export const RampProvider: React.FC<{ children: React.ReactNode }> = ({ children
   });
 
   // Current session persona
-  const [currentRole, setCurrentRole] = useState<UserRole>('employer');
+  const [currentRole, setCurrentRoleState] = useState<UserRole>('employer');
   const [currentCandidateId, setCurrentCandidateId] = useState<string>('cand-001');
   const [currentEmployerId, setCurrentEmployerId] = useState<string>('emp-001');
+  const [authSession, setAuthSession] = useState<Session | null>(null);
+  const [authReady, setAuthReady] = useState(isDemoMode);
+  const [marketplaceReady, setMarketplaceReady] = useState(isDemoMode);
+  const [hasMarketplaceProfile, setHasMarketplaceProfile] = useState(isDemoMode);
+  const [marketplaceError, setMarketplaceError] = useState<string | null>(null);
 
   // UI state
   const [mobilePreviewMode, setMobilePreviewMode] = useState<boolean>(false);
   const [selectedEmailModal, setSelectedEmailModal] = useState<EmailLog | null>(null);
   const [selectedCandidateForInvite, setSelectedCandidateForInvite] = useState<CandidateProfile | null>(null);
 
+  useEffect(() => {
+    if (isDemoMode) return;
+    if (!supabase) {
+      setAuthReady(true);
+      setMarketplaceReady(true);
+      return;
+    }
+
+    let active = true;
+    void supabase.auth.getSession().then(({ data, error }) => {
+      if (!active) return;
+      if (error) setMarketplaceError(error.message);
+      setAuthSession(data.session);
+      setAuthReady(true);
+    });
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      setAuthSession(session);
+      setAuthReady(true);
+    });
+
+    return () => {
+      active = false;
+      subscription.unsubscribe();
+    };
+  }, [isDemoMode]);
+
+  const loadMarketplaceState = async (session: Session) => {
+    const response = await fetch('/api/marketplace/state', {
+      headers: { Authorization: `Bearer ${session.access_token}` },
+    });
+    const payload: unknown = await response.json();
+    if (response.status === 409) {
+      setCandidates([]);
+      setEmployers([]);
+      setJobInvites([]);
+      setNotifications([]);
+      setEmailLogs([]);
+      setHasMarketplaceProfile(false);
+      const metadataRole = session.user.user_metadata?.account_role;
+      if (metadataRole === 'candidate' || metadataRole === 'employer') {
+        setCurrentRoleState(metadataRole);
+      }
+      return;
+    }
+    if (!response.ok || typeof payload !== 'object' || payload === null) {
+      const message =
+        typeof payload === 'object' && payload !== null && 'error' in payload &&
+        typeof payload.error === 'string'
+          ? payload.error
+          : 'Unable to load marketplace data.';
+      throw new Error(message);
+    }
+    const state = payload as {
+      role: UserRole;
+      userId: string;
+      candidates: CandidateProfile[];
+      employers: EmployerProfile[];
+      jobInvites: JobInvite[];
+      notifications: PushNotification[];
+      emailLogs: EmailLog[];
+    };
+    setCurrentRoleState(state.role);
+    setCurrentCandidateId(state.userId);
+    setCurrentEmployerId(state.userId);
+    setCandidates(state.candidates);
+    setEmployers(state.employers);
+    setJobInvites(state.jobInvites);
+    setNotifications(state.notifications);
+    setEmailLogs(state.emailLogs);
+    setHasMarketplaceProfile(true);
+  };
+
+  useEffect(() => {
+    if (isDemoMode || !authReady) return;
+    if (!authSession) {
+      setCandidates([]);
+      setEmployers([]);
+      setJobInvites([]);
+      setNotifications([]);
+      setEmailLogs([]);
+      setHasMarketplaceProfile(false);
+      setMarketplaceReady(true);
+      setCurrentRole('employer');
+      setMarketplaceError(null);
+      return;
+    }
+
+    let active = true;
+    setMarketplaceReady(false);
+    void loadMarketplaceState(authSession)
+      .catch((error: unknown) => {
+        if (active) {
+          setMarketplaceError(
+            error instanceof Error ? error.message : 'Unable to load marketplace data.'
+          );
+        }
+      })
+      .finally(() => {
+        if (active) setMarketplaceReady(true);
+      });
+    return () => {
+      active = false;
+    };
+  }, [isDemoMode, authReady, authSession?.access_token]);
+
+  useEffect(() => {
+    if (isDemoMode || !authSession) return;
+    const url = new URL(window.location.href);
+    if (url.searchParams.get('verification') !== 'complete') return;
+    url.searchParams.delete('verification');
+    window.history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`);
+    void loadMarketplaceState(authSession).catch((error: unknown) =>
+      setMarketplaceError(error instanceof Error ? error.message : 'Unable to refresh verification status.')
+    );
+  }, [isDemoMode, authSession?.access_token]);
+
+  const signIn = async (email: string, password: string) => {
+    if (!supabase) throw new Error('Supabase authentication is not configured.');
+    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    if (error) throw error;
+  };
+
+  const signUp = async (email: string, password: string, role: 'candidate' | 'employer') => {
+    if (!supabase) throw new Error('Supabase authentication is not configured.');
+    const { data, error } = await supabase.auth.signUp({
+      email,
+      password,
+      options: { data: { account_role: role } },
+    });
+    if (error) throw error;
+    if (!data.session) {
+      throw new Error('Check your email to confirm your account, then sign in to continue.');
+    }
+  };
+
+  const signOut = async () => {
+    if (!supabase) return;
+    const { error } = await supabase.auth.signOut();
+    if (error) throw error;
+  };
+
+  const resetPassword = async (email: string) => {
+    if (!supabase) throw new Error('Supabase authentication is not configured.');
+    const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), {
+      redirectTo: window.location.origin,
+    });
+    if (error) throw error;
+  };
+
+  const updatePassword = async (password: string) => {
+    if (!supabase) throw new Error('Supabase authentication is not configured.');
+    const { error } = await supabase.auth.updateUser({ password });
+    if (error) throw error;
+    const url = new URL(window.location.href);
+    url.hash = '';
+    url.searchParams.delete('type');
+    window.history.replaceState({}, '', `${url.pathname}${url.search}`);
+  };
+
+  const refreshMarketplace = async () => {
+    if (!authSession) return;
+    await loadMarketplaceState(authSession);
+  };
+
+  const setCurrentRole = (role: UserRole) => {
+    if (isDemoMode) {
+      setCurrentRoleState(role);
+      return;
+    }
+    if (role !== currentRole) {
+      setMarketplaceError('Your account role cannot be changed.');
+    }
+  };
+  const setCurrentCandidate = (id: string) => {
+    if (isDemoMode || id === authSession?.user.id) setCurrentCandidateId(id);
+  };
+  const setCurrentEmployer = (id: string) => {
+    if (isDemoMode || id === authSession?.user.id) setCurrentEmployerId(id);
+  };
+
+  const requestMarketplace = async (
+    url: string,
+    method: string,
+    body?: unknown
+  ): Promise<unknown> => {
+    if (!authSession) throw new Error('Sign in before using the marketplace.');
+    const response = await fetch(url, {
+      method,
+      headers: {
+        Authorization: `Bearer ${authSession.access_token}`,
+        ...(body ? { 'Content-Type': 'application/json' } : {}),
+      },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    });
+    const payload: unknown = await response.json();
+    if (!response.ok) {
+      throw new Error(
+        typeof payload === 'object' && payload !== null && 'error' in payload &&
+          typeof payload.error === 'string'
+          ? payload.error
+          : 'Marketplace request failed.'
+      );
+    }
+    return payload;
+  };
+
+  const startPersonaVerification = async (type: 'identity' | 'employer'): Promise<string> => {
+    const payload = await requestMarketplace(
+      `/api/persona/verification/${type}/start`,
+      'POST',
+      { consentAccepted: true }
+    );
+    if (
+      typeof payload !== 'object' ||
+      payload === null ||
+      !('verificationUrl' in payload) ||
+      typeof payload.verificationUrl !== 'string'
+    ) {
+      throw new Error('Persona did not return a verification link.');
+    }
+    return payload.verificationUrl;
+  };
+
+  const persistProfile = async (
+    role: 'candidate' | 'employer',
+    profile: CandidateProfile | EmployerProfile,
+    isNew = false,
+    checkIn = false
+  ) => {
+    if (isDemoMode) return;
+    await requestMarketplace('/api/marketplace/profile', isNew ? 'POST' : 'PUT', {
+      role,
+      profile,
+      checkIn,
+    });
+  };
+
   // Sync to local storage
   useEffect(() => {
+    if (!isDemoMode) return;
     localStorage.setItem(`${STORAGE_KEY_PREFIX}candidates`, JSON.stringify(candidates));
-  }, [candidates]);
+  }, [candidates, isDemoMode]);
 
   useEffect(() => {
+    if (!isDemoMode) return;
     localStorage.setItem(`${STORAGE_KEY_PREFIX}employers`, JSON.stringify(employers));
-  }, [employers]);
+  }, [employers, isDemoMode]);
 
   useEffect(() => {
+    if (!isDemoMode) return;
     localStorage.setItem(`${STORAGE_KEY_PREFIX}invites`, JSON.stringify(jobInvites));
-  }, [jobInvites]);
+  }, [jobInvites, isDemoMode]);
 
   useEffect(() => {
+    if (!isDemoMode) return;
     localStorage.setItem(`${STORAGE_KEY_PREFIX}notifications`, JSON.stringify(notifications));
-  }, [notifications]);
+  }, [notifications, isDemoMode]);
 
   useEffect(() => {
+    if (!isDemoMode) return;
     localStorage.setItem(`${STORAGE_KEY_PREFIX}emails`, JSON.stringify(emailLogs));
-  }, [emailLogs]);
+  }, [emailLogs, isDemoMode]);
 
   // Derived current user objects
   const currentCandidate = candidates.find((c) => c.id === currentCandidateId) || candidates[0] || null;
@@ -196,6 +470,15 @@ export const RampProvider: React.FC<{ children: React.ReactNode }> = ({ children
   // 1-Click Check In Engine
   const checkInCandidate = (candidateId?: string) => {
     const targetId = candidateId || currentCandidateId;
+    if (!isDemoMode) {
+      if (targetId !== authSession?.user.id) return;
+      void requestMarketplace('/api/marketplace/check-in', 'POST')
+        .then(() => refreshMarketplace())
+        .catch((error: unknown) =>
+          setMarketplaceError(error instanceof Error ? error.message : 'Unable to record check-in.')
+        );
+      return;
+    }
     setCandidates((prev) =>
       prev.map((c) => {
         if (c.id === targetId) {
@@ -230,8 +513,8 @@ export const RampProvider: React.FC<{ children: React.ReactNode }> = ({ children
         id: `email-${Date.now()}`,
         toEmail: targetCand.email,
         toName: targetCand.name,
-        subject: 'Confirmation: Your RAMP Profile is Active',
-        senderName: 'RAMP Activity Engine',
+        subject: 'Confirmation: Your RAMPED Profile is Active',
+        senderName: 'RAMPED Activity Engine',
         sentAt: new Date().toISOString(),
         category: 'account_restored',
         htmlBody: `
@@ -258,13 +541,34 @@ export const RampProvider: React.FC<{ children: React.ReactNode }> = ({ children
         return c;
       })
     );
+    if (!isDemoMode && currentCandidate) {
+      void persistProfile('candidate', { ...currentCandidate, ...updated }).catch((error: unknown) =>
+        setMarketplaceError(error instanceof Error ? error.message : 'Unable to save profile.')
+      );
+    }
   };
 
   // OCR Processing logic (OCR Textract / Vision simulation with high fidelity)
   const uploadCandidateCredential = async (
     fileDataUrl: string,
     manualOverrides?: Partial<CredentialOcrData>
-  ): Promise<CredentialOcrData> => {
+  ): Promise<CredentialOcrData | undefined> => {
+    if (!isDemoMode) {
+      if (!currentCandidate) throw new Error('Complete your candidate profile before uploading a credential.');
+      const updated: CandidateProfile = {
+        ...currentCandidate,
+        credentialDocumentUrl: fileDataUrl,
+        credentialOcrData: undefined,
+        verificationStatus: 'pending',
+        verifiedBadge: false,
+      };
+      setCandidates((prev) => prev.map((candidate) =>
+        candidate.id === currentCandidate.id ? updated : candidate
+      ));
+      await persistProfile('candidate', updated);
+      return undefined;
+    }
+
     // Simulate intelligent OCR extraction latency (600ms)
     await new Promise((res) => setTimeout(res, 600));
 
@@ -300,13 +604,24 @@ export const RampProvider: React.FC<{ children: React.ReactNode }> = ({ children
         return c;
       })
     );
+    if (!isDemoMode && currentCandidate) {
+      void persistProfile('candidate', {
+        ...currentCandidate,
+        credentialDocumentUrl: fileDataUrl,
+        credentialOcrData: extracted,
+        verificationStatus: 'pending',
+        verifiedBadge: false,
+      }).catch((error: unknown) =>
+        setMarketplaceError(error instanceof Error ? error.message : 'Unable to save credential.')
+      );
+    }
 
     return extracted;
   };
 
   const registerCandidate = (data: Partial<CandidateProfile>): CandidateProfile => {
     const newCand: CandidateProfile = {
-      id: `cand-${Date.now()}`,
+      id: isDemoMode ? `cand-${Date.now()}` : authSession?.user.id || '',
       name: data.name || 'Anonymous Candidate',
       email: data.email || 'candidate@example.com',
       phone: data.phone || '',
@@ -329,7 +644,7 @@ export const RampProvider: React.FC<{ children: React.ReactNode }> = ({ children
       resumeFileName: data.resumeFileName || 'Resume.pdf',
       resumeSummary: data.resumeSummary || '',
       coverLetterText: data.coverLetterText || '',
-      credentialDocumentUrl: data.credentialDocumentUrl || SAMPLE_DIPLOMA_IMAGE,
+      credentialDocumentUrl: data.credentialDocumentUrl || (isDemoMode ? SAMPLE_DIPLOMA_IMAGE : ''),
       credentialOcrData: data.credentialOcrData,
       verificationStatus: 'pending',
       verifiedBadge: false,
@@ -343,31 +658,50 @@ export const RampProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     setCandidates((prev) => [newCand, ...prev]);
     setCurrentCandidateId(newCand.id);
-    setCurrentRole('candidate');
+    setCurrentRoleState('candidate');
+    if (!isDemoMode) {
+      void persistProfile('candidate', newCand, true)
+        .then(() => {
+          setHasMarketplaceProfile(true);
+          setMarketplaceError(null);
+        })
+        .catch((error: unknown) =>
+          setMarketplaceError(error instanceof Error ? error.message : 'Unable to create candidate profile.')
+        );
+    }
     return newCand;
   };
 
   const registerEmployer = (data: Partial<EmployerProfile>): EmployerProfile => {
     const newEmp: EmployerProfile = {
-      id: `emp-${Date.now()}`,
+      id: isDemoMode ? `emp-${Date.now()}` : authSession?.user.id || '',
       companyName: data.companyName || 'New Venture Inc',
       recruiterName: data.recruiterName || 'Talent Partner',
       recruiterTitle: data.recruiterTitle || 'Head of Talent',
       email: data.email || 'talent@newventure.com',
       phone: data.phone || '+1 (555) 019-2831',
       corporateDomain: data.corporateDomain || 'newventure.com',
-      taxId: data.taxId || 'EIN: 84-0000000',
       websiteUrl: data.websiteUrl || 'https://newventure.com',
       industry: data.industry || 'Technology',
       companySize: data.companySize || '50-100 employees',
       verificationStatus: 'pending', // Requires admin verification gate!
-      subscriptionTier: 'tier1',
-      subscriptionCadence: 'monthly',
+      subscriptionTier: isDemoMode ? 'tier1' : 'none',
+      subscriptionCadence: isDemoMode ? 'monthly' : null,
     };
 
     setEmployers((prev) => [newEmp, ...prev]);
     setCurrentEmployerId(newEmp.id);
-    setCurrentRole('employer');
+    setCurrentRoleState('employer');
+    if (!isDemoMode) {
+      void persistProfile('employer', newEmp, true)
+        .then(() => {
+          setHasMarketplaceProfile(true);
+          setMarketplaceError(null);
+        })
+        .catch((error: unknown) =>
+          setMarketplaceError(error instanceof Error ? error.message : 'Unable to create employer profile.')
+        );
+    }
     return newEmp;
   };
 
@@ -380,146 +714,61 @@ export const RampProvider: React.FC<{ children: React.ReactNode }> = ({ children
         return e;
       })
     );
+    if (!isDemoMode && currentEmployer) {
+      void persistProfile('employer', { ...currentEmployer, ...updated }).catch((error: unknown) =>
+        setMarketplaceError(error instanceof Error ? error.message : 'Unable to save employer profile.')
+      );
+    }
   };
 
-  const upgradeSubscription = (
+  const activateSubscription = useCallback((
     tier: SubscriptionTier,
     cadence: BillingCadence,
-    invoiceData?: Partial<InvoiceRecord>,
-    alertCategories?: JobCategory[]
+    activeUntil: string,
+    stripeCustomerId: string,
+    stripeSubscriptionId: string,
+    alertCategories: JobCategory[] = []
   ) => {
-    const isTier2 = tier === 'tier2';
-    const basePrice = cadence === 'monthly' ? (isTier2 ? 599 : 299) : (isTier2 ? 5990 : 2990);
-    const tax = Math.round(basePrice * 0.0825 * 100) / 100;
-    const total = basePrice + tax;
-
-    const newInvoice: InvoiceRecord = {
-      id: `inv-rec-${Date.now()}`,
-      invoiceNumber: `INV-RAMP-${new Date().getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`,
-      employerId: currentEmployerId,
-      companyName: currentEmployer?.companyName || 'Apex Innovations',
-      planName: tier === 'tier2' ? 'RAMP Tier 2 · Real-Time Instant Alerts' : 'RAMP Tier 1 · Verified Search',
-      tier,
-      cadence,
-      amount: basePrice,
-      currency: 'USD',
-      taxAmount: tax,
-      totalAmount: total,
-      date: new Date().toISOString(),
-      status: 'paid',
-      stripePaymentIntentId: `pi_3P${Math.random().toString(36).substring(2, 15)}`,
-      stripeSubscriptionId: `sub_1N${Math.random().toString(36).substring(2, 15)}`,
-      stripeCustomerId: `cus_${Math.random().toString(36).substring(2, 12)}`,
-      paymentMethod: invoiceData?.paymentMethod || {
-        brand: 'Visa',
-        last4: '4242',
-        expMonth: 12,
-        expYear: 2028,
-      },
-      billingAddress: invoiceData?.billingAddress || {
-        name: currentEmployer?.recruiterName || 'Billing Manager',
-        line1: '100 Montgomery St, Suite 1400',
-        city: 'San Francisco',
-        postalCode: '94104',
-        country: 'United States',
-        taxId: currentEmployer?.taxId || 'EIN: 84-3991204',
-      },
-    };
-
     setEmployers((prev) =>
-      prev.map((e) => {
-        if (e.id === currentEmployerId) {
-          const existingInvoices = e.invoices || [];
-          return {
-            ...e,
-            subscriptionTier: tier,
-            subscriptionCadence: cadence,
-            subscriptionActiveUntil: new Date(
-              Date.now() + (cadence === 'annual' ? 365 : 30) * 24 * 60 * 60 * 1000
-            ).toISOString(),
-            instantAlertsEnabled: tier === 'tier2',
-            instantAlertCategories: alertCategories || e.instantAlertCategories || ['Full-Stack Software Engineer', 'Data Scientist & ML Engineer'],
-            invoices: [newInvoice, ...existingInvoices],
-          };
-        }
-        return e;
-      })
+      prev.map((employer) =>
+        employer.id === currentEmployerId
+          ? {
+              ...employer,
+              subscriptionTier: tier,
+              subscriptionCadence: cadence,
+              subscriptionActiveUntil: activeUntil,
+              stripeCustomerId,
+              stripeSubscriptionId,
+              instantAlertsEnabled: tier === 'tier2',
+              instantAlertCategories:
+                tier === 'tier2' ? alertCategories : employer.instantAlertCategories,
+            }
+          : employer
+      )
     );
+  }, [currentEmployerId]);
 
-    // Push notification for subscription
-    const pushNotif: PushNotification = {
-      id: `notif-${Date.now()}`,
-      userId: currentEmployerId,
-      title: `Subscription Active: ${tier === 'tier2' ? 'Tier 2 (Real-Time Alerts)' : 'Tier 1 Plan'}`,
-      message: `Your Stripe payment of $${total.toFixed(2)} was successfully processed. Unlimited direct invites are now active.`,
-      type: 'verification',
-      timestamp: new Date().toISOString(),
-      read: false,
-    };
-    setNotifications((prev) => [pushNotif, ...prev]);
-
-    // Send confirmation email with receipt
-    const receiptEmail: EmailLog = {
-      id: `email-${Date.now()}`,
-      toEmail: currentEmployer?.email || 'billing@company.com',
-      toName: currentEmployer?.recruiterName || 'Talent Lead',
-      subject: `Receipt for ${newInvoice.invoiceNumber} · RAMP Subscription`,
-      senderName: 'RAMP Billing & Stripe Receipts',
-      sentAt: new Date().toISOString(),
-      category: 'employer_verified',
-      htmlBody: `
-        <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; padding: 32px; background: #ffffff; border: 1px solid #e2e8f0; border-radius: 12px; color: #0f172a;">
-          <div style="border-bottom: 2px solid #0f172a; padding-bottom: 16px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center;">
-            <h1 style="font-size: 20px; font-weight: 800; margin: 0; color: #0f172a;">RAMP · Payment Receipt</h1>
-            <span style="font-family: monospace; font-size: 13px; color: #64748b;">${newInvoice.invoiceNumber}</span>
-          </div>
-
-          <p style="font-size: 14px; margin-top: 0;">Hi ${currentEmployer?.recruiterName},</p>
-          <p style="font-size: 14px;">Thank you for subscribing to RAMP. Your payment has been processed via Stripe.</p>
-
-          <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 16px; margin: 20px 0;">
-            <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
-              <tr>
-                <td style="padding: 6px 0; color: #475569;">Plan</td>
-                <td style="padding: 6px 0; text-align: right; font-weight: 600; color: #0f172a;">${newInvoice.planName} (${cadence})</td>
-              </tr>
-              <tr>
-                <td style="padding: 6px 0; color: #475569;">Stripe Payment ID</td>
-                <td style="padding: 6px 0; text-align: right; font-family: monospace; color: #64748b;">${newInvoice.stripePaymentIntentId}</td>
-              </tr>
-              <tr>
-                <td style="padding: 6px 0; color: #475569;">Subtotal</td>
-                <td style="padding: 6px 0; text-align: right; color: #0f172a;">$${basePrice.toLocaleString()}</td>
-              </tr>
-              <tr>
-                <td style="padding: 6px 0; color: #475569;">Sales Tax / VAT (8.25%)</td>
-                <td style="padding: 6px 0; text-align: right; color: #0f172a;">$${tax.toFixed(2)}</td>
-              </tr>
-              <tr style="border-top: 1px solid #cbd5e1; font-weight: 700; font-size: 15px;">
-                <td style="padding: 10px 0; color: #0f172a;">Total Paid</td>
-                <td style="padding: 10px 0; text-align: right; color: #0f172a;">$${total.toFixed(2)}</td>
-              </tr>
-            </table>
-          </div>
-
-          <p style="font-size: 13px; color: #64748b;">Card charged: ${newInvoice.paymentMethod.brand} ending in ${newInvoice.paymentMethod.last4}</p>
-          <p style="font-size: 12px; color: #94a3b8; border-top: 1px solid #f1f5f9; padding-top: 16px; margin-top: 24px;">
-            RAMP Technologies Inc. · 100 Montgomery St, San Francisco, CA · Stripe Verified Merchant
-          </p>
-        </div>
-      `,
-    };
-    setEmailLogs((prev) => [receiptEmail, ...prev]);
-
-    return newInvoice;
-  };
+  const deactivateSubscription = useCallback(() => {
+    setEmployers((prev) =>
+      prev.map((employer) =>
+        employer.id === currentEmployerId
+          ? {
+              ...employer,
+              subscriptionTier: 'none',
+              subscriptionActiveUntil: undefined,
+              instantAlertsEnabled: false,
+            }
+          : employer
+      )
+    );
+  }, [currentEmployerId]);
 
   // Job Invite & Notification Pipeline
   const sendJobInvite = (inviteData: Omit<JobInvite, 'id' | 'sentAt' | 'viewedByCandidate'>): JobInvite => {
     const contactName = inviteData.contactName || inviteData.recruiterName || 'Talent Representative';
     const contactTitle = inviteData.contactTitle || inviteData.recruiterTitle || 'Hiring Lead';
     const contactEmail = inviteData.contactEmail || inviteData.recruiterEmail || 'recruiter@company.com';
-    const referenceCode = inviteData.referenceCode || `RAMP-REF-${Math.floor(1000 + Math.random() * 9000)}`;
+    const referenceCode = inviteData.referenceCode || `RAMPED-REF-${Math.floor(1000 + Math.random() * 9000)}`;
 
     const newInvite: JobInvite = {
       ...inviteData,
@@ -540,14 +789,50 @@ export const RampProvider: React.FC<{ children: React.ReactNode }> = ({ children
       viewedByCandidate: false,
     };
 
-    setJobInvites((prev) => [newInvite, ...prev]);
+    if (isDemoMode) {
+      setJobInvites((prev) => [newInvite, ...prev]);
+    } else {
+      void requestMarketplace('/api/marketplace/invites', 'POST', { invite: newInvite })
+        .then((payload) => {
+          if (
+            typeof payload !== 'object' ||
+            payload === null ||
+            !('invite' in payload) ||
+            typeof payload.invite !== 'object' ||
+            payload.invite === null
+          ) {
+            throw new Error('The server did not return the saved invite.');
+          }
+          const savedInvite = payload.invite as Partial<JobInvite>;
+          if (typeof savedInvite.id !== 'string' || typeof savedInvite.sentAt !== 'string') {
+            throw new Error('The saved invite response was invalid.');
+          }
+          setJobInvites((prev) => [
+            { ...newInvite, ...savedInvite },
+            ...prev.filter((invite) => invite.id !== newInvite.id),
+          ]);
+          const emailStatus =
+            typeof payload === 'object' && payload !== null && 'emailStatus' in payload
+              ? payload.emailStatus
+              : 'sent';
+          setMarketplaceError(
+            emailStatus === 'sent'
+              ? null
+              : 'The invite was saved, but its email could not be delivered yet. RAMPED will retry it automatically.'
+          );
+        })
+        .catch((error: unknown) => {
+          setMarketplaceError(error instanceof Error ? error.message : 'Unable to send invite.');
+        });
+      return newInvite;
+    }
 
     // 1. Immediately fire In-App Push Notification to candidate
     const pushNotif: PushNotification = {
       id: `notif-${Date.now()}`,
       userId: inviteData.candidateId,
       title: `Direct Invite: ${inviteData.employerCompanyName} [No In-App Reply]`,
-      message: `${inviteData.employerCompanyName} sent you an invitation for "${inviteData.jobTitle}". Note: There is NO reply in RAMP. Follow the company contact instructions to connect directly with ${contactName}.`,
+      message: `${inviteData.employerCompanyName} sent you an invitation for "${inviteData.jobTitle}". Note: There is NO reply in RAMPED. Follow the company contact instructions to connect directly with ${contactName}.`,
       type: 'invite',
       timestamp: new Date().toISOString(),
       read: false,
@@ -561,29 +846,29 @@ export const RampProvider: React.FC<{ children: React.ReactNode }> = ({ children
       toEmail: inviteData.candidateEmail,
       toName: inviteData.candidateName,
       subject: `Direct Job Invite: ${inviteData.jobTitle} at ${inviteData.employerCompanyName} [No In-App Reply]`,
-      senderName: `${contactName} (${inviteData.employerCompanyName} via RAMP)`,
+      senderName: `${contactName} (${inviteData.employerCompanyName} via RAMPED)`,
       sentAt: new Date().toISOString(),
       category: 'job_invite',
       htmlBody: `
         <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 640px; margin: 0 auto; padding: 32px; background: #ffffff; border: 1px solid #e2e8f0; border-radius: 12px; color: #0f172a;">
           <div style="border-bottom: 2px solid #0f172a; padding-bottom: 16px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center;">
-            <h1 style="font-size: 20px; font-weight: 800; letter-spacing: -0.02em; margin: 0; color: #0f172a;">RAMP</h1>
+            <h1 style="font-size: 20px; font-weight: 800; letter-spacing: -0.02em; margin: 0; color: #0f172a;">RAMPED</h1>
             <span style="font-size: 12px; font-weight: 600; background: #f1f5f9; padding: 4px 8px; border-radius: 4px; color: #475569;">Verified Direct Invite</span>
           </div>
 
           <!-- Strict No-In-App-Reply Policy Banner -->
           <div style="background: #fffbeb; border: 1px solid #fde68a; border-left: 4px solid #f59e0b; border-radius: 8px; padding: 14px 16px; margin-bottom: 24px;">
             <div style="font-weight: 800; color: #92400e; font-size: 13px; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4px;">
-              ⚠️ IMPORTANT: There is NO reply inside RAMP
+              ⚠️ IMPORTANT: There is NO reply inside RAMPED
             </div>
             <div style="font-size: 13px; color: #78350f; line-height: 1.5;">
-              RAMP is an unbiased discovery platform and does not offer an in-app messaging or reply tool. To respond to this invitation, follow the instructions below to contact the employer representative directly.
+              RAMPED is an unbiased discovery platform and does not offer an in-app messaging or reply tool. To respond to this invitation, follow the instructions below to contact the employer representative directly.
             </div>
           </div>
 
           <p style="font-size: 15px; line-height: 1.6; margin-top: 0;">Hi ${inviteData.candidateName},</p>
           <p style="font-size: 15px; line-height: 1.6;">
-            <strong>${inviteData.employerCompanyName}</strong> discovered your verified academic credentials on RAMP and sent you a direct, non-public invitation to explore an open position:
+            <strong>${inviteData.employerCompanyName}</strong> discovered your verified academic credentials on RAMPED and sent you a direct, non-public invitation to explore an open position:
           </p>
 
           <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 20px; margin: 24px 0;">
@@ -606,7 +891,7 @@ export const RampProvider: React.FC<{ children: React.ReactNode }> = ({ children
             <div style="font-size: 14px; color: #1e40af; line-height: 1.6; margin-bottom: 14px;">
               <div><strong>Company Contact:</strong> ${contactName}</div>
               <div><strong>Role / Title:</strong> ${contactTitle}</div>
-              <div><strong>Direct Email:</strong> <a href="mailto:${contactEmail}?subject=Re:%20RAMP%20Invitation%20for%20${encodeURIComponent(inviteData.jobTitle)}%20[Ref:%20${referenceCode}]" style="color: #2563eb; text-decoration: underline; font-weight: 600;">${contactEmail}</a></div>
+              <div><strong>Direct Email:</strong> <a href="mailto:${contactEmail}?subject=Re:%20RAMPED%20Invitation%20for%20${encodeURIComponent(inviteData.jobTitle)}%20[Ref:%20${referenceCode}]" style="color: #2563eb; text-decoration: underline; font-weight: 600;">${contactEmail}</a></div>
               ${inviteData.contactPhone ? `<div><strong>Direct Phone:</strong> ${inviteData.contactPhone}</div>` : ''}
               ${inviteData.schedulingUrl ? `<div><strong>Interview Booking Link:</strong> <a href="${inviteData.schedulingUrl}" style="color: #2563eb; text-decoration: underline;">${inviteData.schedulingUrl}</a></div>` : ''}
               <div><strong>Reference Code:</strong> <code style="background: #dbeafe; padding: 2px 6px; border-radius: 4px; font-family: monospace; font-weight: 700;">${referenceCode}</code></div>
@@ -619,7 +904,7 @@ export const RampProvider: React.FC<{ children: React.ReactNode }> = ({ children
           </div>
 
           <div style="border-top: 1px solid #f1f5f9; padding-top: 16px; font-size: 12px; color: #94a3b8;">
-            You received this invite because you are a verified candidate on RAMP. You are under no obligation to reach out; your profile remains passive until you choose to contact the company directly.
+            You received this invite because you are a verified candidate on RAMPED. You are under no obligation to reach out; your profile remains passive until you choose to contact the company directly.
           </div>
         </div>
       `,
@@ -633,6 +918,7 @@ export const RampProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const respondToInvite = (inviteId: string, status: 'accepted' | 'declined') => {
+    if (!isDemoMode) return;
     setJobInvites((prev) =>
       prev.map((inv) => {
         if (inv.id === inviteId) {
@@ -657,6 +943,13 @@ export const RampProvider: React.FC<{ children: React.ReactNode }> = ({ children
         return inv;
       })
     );
+    if (!isDemoMode) {
+      void requestMarketplace(`/api/marketplace/invites/${encodeURIComponent(inviteId)}`, 'PATCH', {
+        candidateContactedExternally: contacted,
+      }).catch((error: unknown) =>
+        setMarketplaceError(error instanceof Error ? error.message : 'Unable to update invite.')
+      );
+    }
   };
 
   const archiveCandidateInvite = (inviteId: string, archived: boolean) => {
@@ -668,10 +961,40 @@ export const RampProvider: React.FC<{ children: React.ReactNode }> = ({ children
         return inv;
       })
     );
+    if (!isDemoMode) {
+      void requestMarketplace(`/api/marketplace/invites/${encodeURIComponent(inviteId)}`, 'PATCH', {
+        candidateArchived: archived,
+      }).catch((error: unknown) =>
+        setMarketplaceError(error instanceof Error ? error.message : 'Unable to update invite.')
+      );
+    }
   };
 
   // Admin: Split-Screen Credential Verification Action
   const verifyCandidateCredential = (candidateId: string, approved: boolean, notes?: string) => {
+    if (!isDemoMode) {
+      void requestMarketplace('/api/admin/verification', 'POST', {
+        userId: candidateId,
+        approved,
+        notes,
+      })
+        .then(async (payload) => {
+          await refreshMarketplace();
+          const emailStatus =
+            typeof payload === 'object' && payload !== null && 'emailStatus' in payload
+              ? payload.emailStatus
+              : 'sent';
+          setMarketplaceError(
+            emailStatus === 'sent' || emailStatus === 'not_available'
+              ? null
+              : 'Verification was saved, but its email could not be delivered yet. RAMPED will retry it automatically.'
+          );
+        })
+        .catch((error: unknown) =>
+          setMarketplaceError(error instanceof Error ? error.message : 'Unable to update verification.')
+        );
+      return;
+    }
     setCandidates((prev) =>
       prev.map((c) => {
         if (c.id === candidateId) {
@@ -693,7 +1016,7 @@ export const RampProvider: React.FC<{ children: React.ReactNode }> = ({ children
         userId: cand.id,
         title: approved ? 'Degree Verified! Verified Badge Issued' : 'Credential Verification Update',
         message: approved
-          ? 'Your academic credentials have been verified by RAMP administrators. You are now discoverable by verified employers.'
+          ? 'Your academic credentials have been verified by RAMPED administrators. You are now discoverable by verified employers.'
           : 'Your uploaded credential was rejected. Please review notes and upload an official degree certificate.',
         type: 'verification',
         timestamp: new Date().toISOString(),
@@ -728,6 +1051,29 @@ export const RampProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   // Admin: Employer Corporate Verification Action
   const verifyEmployerBusiness = (employerId: string, approved: boolean, reason?: string) => {
+    if (!isDemoMode) {
+      void requestMarketplace('/api/admin/verification', 'POST', {
+        userId: employerId,
+        approved,
+        notes: reason,
+      })
+        .then(async (payload) => {
+          await refreshMarketplace();
+          const emailStatus =
+            typeof payload === 'object' && payload !== null && 'emailStatus' in payload
+              ? payload.emailStatus
+              : 'sent';
+          setMarketplaceError(
+            emailStatus === 'sent' || emailStatus === 'not_available'
+              ? null
+              : 'Verification was saved, but its email could not be delivered yet. RAMPED will retry it automatically.'
+          );
+        })
+        .catch((error: unknown) =>
+          setMarketplaceError(error instanceof Error ? error.message : 'Unable to update verification.')
+        );
+      return;
+    }
     setEmployers((prev) =>
       prev.map((e) => {
         if (e.id === employerId) {
@@ -748,9 +1094,9 @@ export const RampProvider: React.FC<{ children: React.ReactNode }> = ({ children
         toEmail: emp.email,
         toName: emp.recruiterName,
         subject: approved
-          ? `RAMP Corporate Account Approved: ${emp.companyName}`
-          : `RAMP Verification Update: Additional Business Proof Required`,
-        senderName: 'RAMP Trust & Safety',
+          ? `RAMPED Corporate Account Approved: ${emp.companyName}`
+          : `RAMPED Verification Update: Additional Business Proof Required`,
+        senderName: 'RAMPED Trust & Safety',
         sentAt: new Date().toISOString(),
         category: 'employer_verified',
         htmlBody: `
@@ -770,6 +1116,28 @@ export const RampProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const sendAdminEmailToCandidate = (candidateId: string, subject: string, bodyText: string) => {
+    if (!isDemoMode) {
+      void requestMarketplace('/api/admin/email', 'POST', {
+        userId: candidateId,
+        subject,
+        bodyText,
+      })
+        .then((payload) => {
+          const emailStatus =
+            typeof payload === 'object' && payload !== null && 'emailStatus' in payload
+              ? payload.emailStatus
+              : 'sent';
+          setMarketplaceError(
+            emailStatus === 'sent'
+              ? null
+              : 'The administrator email could not be delivered yet. RAMPED will retry it automatically.'
+          );
+        })
+        .catch((error: unknown) =>
+          setMarketplaceError(error instanceof Error ? error.message : 'Unable to send administrator email.')
+        );
+      return;
+    }
     const cand = candidates.find((c) => c.id === candidateId);
     if (!cand) return;
 
@@ -778,19 +1146,19 @@ export const RampProvider: React.FC<{ children: React.ReactNode }> = ({ children
       toEmail: cand.email,
       toName: cand.name,
       subject,
-      senderName: 'RAMP Platform Administrator',
+      senderName: 'RAMPED Platform Administrator',
       sentAt: new Date().toISOString(),
       category: 'credential_approved',
       htmlBody: `
         <div style="font-family: sans-serif; max-width: 600px; margin: auto; padding: 24px; border: 1px solid #e2e8f0; border-radius: 8px; background-color: #ffffff; color: #1e293b;">
           <div style="border-bottom: 2px solid #6366f1; padding-bottom: 12px; margin-bottom: 16px;">
-            <span style="font-size: 11px; font-weight: bold; text-transform: uppercase; color: #6366f1; font-family: monospace;">RAMP governance communication</span>
+            <span style="font-size: 11px; font-weight: bold; text-transform: uppercase; color: #6366f1; font-family: monospace;">RAMPED governance communication</span>
           </div>
-          <h2 style="color: #0f172a; margin-top: 0;">Message from RAMP Platform Admin</h2>
+          <h2 style="color: #0f172a; margin-top: 0;">Message from RAMPED Platform Admin</h2>
           <p>Dear ${cand.name},</p>
           <div style="background-color: #f8fafc; border-left: 4px solid #cbd5e1; padding: 12px 16px; margin: 16px 0; font-size: 14px; line-height: 1.6; white-space: pre-wrap;">${bodyText}</div>
           <p style="font-size: 13px; color: #64748b; margin-top: 24px; border-top: 1px solid #f1f5f9; padding-top: 12px;">
-            This email was sent to you directly by a verified platform administrator regarding your RAMP account status and academic credential verification.
+            This email was sent to you directly by a verified platform administrator regarding your RAMPED account status and academic credential verification.
           </p>
         </div>
       `,
@@ -802,6 +1170,10 @@ export const RampProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   // Inactivity Lifecycle Engine Simulator (Time Traveler)
   const simulateInactivityDays = (candidateId: string, days: number) => {
+    if (!isDemoMode) {
+      setMarketplaceError('The lifecycle time-travel tool is available only in demo mode.');
+      return;
+    }
     setCandidates((prev) =>
       prev.map((c) => {
         if (c.id === candidateId) {
@@ -843,6 +1215,7 @@ export const RampProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const resetAllSeedData = () => {
+    if (!isDemoMode) return;
     setCandidates(INITIAL_CANDIDATES);
     setEmployers(INITIAL_EMPLOYERS);
     setJobInvites(INITIAL_JOB_INVITES);
@@ -856,17 +1229,39 @@ export const RampProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setNotifications((prev) =>
       prev.map((n) => (n.id === notificationId ? { ...n, read: true } : n))
     );
+    if (!isDemoMode) {
+      void requestMarketplace(
+        `/api/marketplace/notifications/${encodeURIComponent(notificationId)}/read`,
+        'PATCH'
+      ).catch((error: unknown) =>
+        setMarketplaceError(error instanceof Error ? error.message : 'Unable to update notification.')
+      );
+    }
   };
 
   return (
     <RampContext.Provider
       value={{
+        isDemoMode,
+        authSession,
+        authReady,
+        marketplaceReady,
+        hasMarketplaceProfile,
+        marketplaceError,
+        clearMarketplaceError: () => setMarketplaceError(null),
+        signIn,
+        signUp,
+        resetPassword,
+        updatePassword,
+        signOut,
+        refreshMarketplace,
+        startPersonaVerification,
         currentRole,
         setCurrentRole,
         currentCandidateId,
-        setCurrentCandidateId,
+          setCurrentCandidateId: setCurrentCandidate,
         currentEmployerId,
-        setCurrentEmployerId,
+          setCurrentEmployerId: setCurrentEmployer,
         candidates,
         employers,
         jobInvites,
@@ -880,7 +1275,8 @@ export const RampProvider: React.FC<{ children: React.ReactNode }> = ({ children
         registerCandidate,
         registerEmployer,
         updateEmployerProfile,
-        upgradeSubscription,
+        activateSubscription,
+        deactivateSubscription,
         sendJobInvite,
         respondToInvite,
         markInviteContacted,

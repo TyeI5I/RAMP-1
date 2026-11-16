@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { useRamp } from '../../context/RampContext';
 import { UserRole } from '../../types/ramp';
+import { AccountDataControls } from '../auth/AccountDataControls';
 import {
   Bell,
   Smartphone,
@@ -28,6 +29,9 @@ export const Navbar: React.FC<NavbarProps> = ({
   onOpenEmails,
 }) => {
   const {
+    isDemoMode,
+    authSession,
+    signOut,
     currentRole,
     setCurrentRole,
     currentCandidate,
@@ -44,6 +48,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   } = useRamp();
 
   const [roleMenuOpen, setRoleMenuOpen] = useState(false);
+  const [authActionError, setAuthActionError] = useState<string | null>(null);
 
   const handleRoleSelect = (role: UserRole) => {
     setCurrentRole(role);
@@ -68,17 +73,17 @@ export const Navbar: React.FC<NavbarProps> = ({
           >
             <span className="font-extrabold text-xl tracking-tight text-white flex items-center gap-1.5">
               <span className="w-2 h-2 rounded-full bg-emerald-500 inline-block animate-pulse"></span>
-              RAMP
+              RAMPED
             </span>
             <span className="hidden md:inline-block text-xs text-neutral-400 font-normal">
-              Recruiter & Applicant Matching Platform
+              Recruiter & Applicant Matching Platform for Employment and Discovery
             </span>
           </button>
         </div>
 
         {/* Zone 2: Navigation Links (single line, clean typography) */}
         <nav className="hidden lg:flex items-center gap-1 text-xs font-medium">
-          <button
+          {(isDemoMode || currentRole === 'employer') && <button
             onClick={() => {
               setCurrentRole('employer');
               setActiveTab('search');
@@ -90,9 +95,9 @@ export const Navbar: React.FC<NavbarProps> = ({
             }`}
           >
             Employer Search
-          </button>
+          </button>}
 
-          <button
+          {(isDemoMode || currentRole === 'candidate') && <button
             onClick={() => {
               setCurrentRole('candidate');
               setActiveTab('candidate');
@@ -104,9 +109,9 @@ export const Navbar: React.FC<NavbarProps> = ({
             }`}
           >
             Candidate Portal
-          </button>
+          </button>}
 
-          <button
+          {(isDemoMode || currentRole === 'admin') && <button
             onClick={() => {
               setCurrentRole('admin');
               setActiveTab('admin');
@@ -118,9 +123,9 @@ export const Navbar: React.FC<NavbarProps> = ({
             }`}
           >
             Admin Verification
-          </button>
+          </button>}
 
-          <button
+          {isDemoMode && <button
             onClick={() => setActiveTab('lifecycle')}
             className={`px-3 py-2 rounded-md transition-colors flex items-center gap-1.5 ${
               activeTab === 'lifecycle'
@@ -130,13 +135,13 @@ export const Navbar: React.FC<NavbarProps> = ({
           >
             <Clock className="w-3.5 h-3.5" />
             14/30 Lifecycle Simulator
-          </button>
+          </button>}
         </nav>
 
         {/* Zone 3: Actions & Role Quick-Switcher */}
         <div className="flex items-center gap-2 sm:gap-3">
           {/* Email Inbox Preview Button */}
-          <button
+          {isDemoMode && <button
             onClick={onOpenEmails}
             title="Inspect candidate email notifications"
             className="relative p-2 rounded-md text-neutral-400 hover:text-white hover:bg-neutral-900 transition-colors"
@@ -148,7 +153,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                 <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500"></span>
               </span>
             )}
-          </button>
+          </button>}
 
           {/* In-App Notifications Bell */}
           <button
@@ -177,7 +182,29 @@ export const Navbar: React.FC<NavbarProps> = ({
             {mobilePreviewMode ? <Smartphone className="w-4 h-4" /> : <Monitor className="w-4 h-4" />}
           </button>
 
+          {!isDemoMode && (
+            <div className="flex items-center gap-2">
+              <AccountDataControls />
+              <span className="hidden sm:inline text-xs text-neutral-400">{authSession?.user.email}</span>
+              <button
+                type="button"
+                onClick={() => {
+                  setAuthActionError(null);
+                  void signOut().catch((error: unknown) =>
+                    setAuthActionError(error instanceof Error ? error.message : 'Unable to sign out.')
+                  );
+                }}
+                className="rounded-md border border-neutral-800 px-3 py-2 text-xs text-neutral-300 hover:bg-neutral-900"
+              >
+                Sign out
+              </button>
+            </div>
+          )}
+
+          {authActionError && <span role="alert" className="text-[11px] text-red-300">{authActionError}</span>}
+
           {/* Role Persona Switcher */}
+          {isDemoMode && (
           <div className="relative">
             <button
               onClick={() => setRoleMenuOpen(!roleMenuOpen)}
@@ -209,7 +236,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                     <div>
                       <div>Employer (Verified)</div>
                       <div className="text-[11px] text-neutral-400 font-normal">
-                        {currentEmployer?.companyName || 'Apex Innovations'}
+                        {currentEmployer?.companyName || 'Employer profile'}
                       </div>
                     </div>
                   </div>
@@ -233,7 +260,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                     <div>
                       <div>Candidate (Passive)</div>
                       <div className="text-[11px] text-neutral-400 font-normal">
-                        {currentCandidate?.name || 'Elena Rostova'}
+                        {currentCandidate?.name || 'Candidate profile'}
                       </div>
                     </div>
                   </div>
@@ -275,6 +302,7 @@ export const Navbar: React.FC<NavbarProps> = ({
               </div>
             )}
           </div>
+          )}
         </div>
       </div>
     </header>

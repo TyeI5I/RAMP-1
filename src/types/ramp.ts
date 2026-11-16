@@ -131,6 +131,7 @@ export interface CandidateProfile {
   coverLetterText?: string;
   credentialDocumentUrl: string; // Sample diploma or user uploaded base64
   credentialOcrData?: CredentialOcrData;
+  identityVerificationStatus?: 'pending' | 'verified' | 'needs_review' | 'rejected' | 'expired';
   verificationStatus: 'pending' | 'verified' | 'rejected';
   verifiedBadge: boolean;
   verificationNotes?: string;
@@ -175,7 +176,7 @@ export interface InvoiceRecord {
     city: string;
     postalCode: string;
     country: string;
-    taxId: string;
+    taxId?: string;
   };
 }
 
@@ -240,15 +241,18 @@ export interface EmployerProfile {
   email: string;
   phone: string;
   corporateDomain: string;
-  taxId: string; // EIN / Business Tax ID
+  taxId?: string;
   websiteUrl: string;
   industry: string;
   companySize: string;
   verificationStatus: 'pending' | 'approved' | 'rejected';
+  businessVerificationStatus?: 'pending' | 'verified' | 'needs_review' | 'rejected' | 'expired';
   rejectionReason?: string;
   subscriptionTier: SubscriptionTier;
-  subscriptionCadence: BillingCadence;
+  subscriptionCadence: BillingCadence | null;
   subscriptionActiveUntil?: string;
+  stripeCustomerId?: string;
+  stripeSubscriptionId?: string;
   instantAlertsEnabled?: boolean;
   instantAlertCategories?: JobCategory[];
   monthlyInvitesSent?: number; // Quota tracking (25 for Tier 1, unlimited for Tier 2)
@@ -280,7 +284,7 @@ export interface JobInvite {
   // Explicit step-by-step instructions on who to contact in that company
   contactInstructions: string;
   sentAt: string;
-  // Note: There is NO in-app reply in RAMP. Candidate outreach occurs externally.
+  // Note: There is NO in-app reply in RAMPED. Candidate outreach occurs externally.
   candidateContactedExternally?: boolean; // Candidate personal tracker: "I reached out directly"
   candidateArchived?: boolean; // Candidate personal tracker: archived from active list
   status?: 'pending' | 'accepted' | 'declined'; // Maintained for backward compatibility

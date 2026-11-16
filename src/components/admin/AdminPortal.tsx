@@ -29,6 +29,7 @@ export const AdminPortal: React.FC = () => {
     verifyCandidateCredential,
     verifyEmployerBusiness,
     sendAdminEmailToCandidate,
+    isDemoMode,
   } = useRamp();
 
   const [activeSection, setActiveSection] = useState<'credentials' | 'employers' | 'metrics'>('credentials');
@@ -63,9 +64,9 @@ export const AdminPortal: React.FC = () => {
       setEmailBody('');
     } else if (templateType === 'legibility') {
       setEmailSubject('Action Required: Please re-upload a legible credential document');
-      setEmailBody(`Thank you for submitting your profile to RAMP.
+      setEmailBody(`Thank you for submitting your profile to RAMPED.
 
-During our platform audit, we found that your uploaded graduation document/diploma is blurry or illegible. To complete your credential verification and grant you the verified RAMP badge, please re-upload a clear, high-resolution PDF or image of your diploma/transcript from your Candidate Portal.
+During our platform audit, we found that your uploaded graduation document/diploma is blurry or illegible. To complete your credential verification and grant you the verified RAMPED badge, please re-upload a clear, high-resolution PDF or image of your diploma/transcript from your Candidate Portal.
 
 Please let us know if you have any questions.`);
     } else if (templateType === 'grad_year') {
@@ -74,14 +75,14 @@ Please let us know if you have any questions.`);
 
 We are currently reviewing your academic credentials for verification. We noticed a slight discrepancy between your self-reported graduation year and the date shown on your official diploma document.
 
-Please reply with clarification so we can proceed with issuing your RAMP Verified Badge.
+Please reply with clarification so we can proceed with issuing your RAMPED Verified Badge.
 
 Thank you!`);
     } else if (templateType === 'congrats') {
-      setEmailSubject('Congratulations! Your RAMP Academic Credentials have been verified');
+      setEmailSubject('Congratulations! Your RAMPED Academic Credentials have been verified');
       setEmailBody(`Fantastic news!
 
-Our platform administration has successfully audited and verified your academic credentials. Your RAMP profile now displays the Verified Badge and is highlighted in premier employer search portals.
+Our platform administration has successfully audited and verified your academic credentials. Your RAMPED profile now displays the Verified Badge and is highlighted in premier employer search portals.
 
 No further action is required from you at this time. Keep your profile check-in active every 14 days to remain discoverable!`);
     }
@@ -123,21 +124,23 @@ No further action is required from you at this time. Keep your profile check-in 
         <div>
           <div className="flex items-center gap-2">
             <span className="text-[11px] font-bold uppercase tracking-wider text-purple-400 font-mono">
-              RAMP Governance & Trust Engine
+              RAMPED Governance & Trust Engine
             </span>
           </div>
           <h1 className="text-xl font-bold text-white tracking-tight mt-0.5">
             Platform Admin & Credential Verification Console
           </h1>
           <p className="text-xs text-neutral-400 mt-1">
-            Dual-pane OCR visual audit for candidate diplomas and corporate entity validation.
+            {isDemoMode
+              ? 'Demo credential data may be simulated; it is not evidence of real verification.'
+              : 'Review submitted documents and verify claims independently before approving candidates or employers.'}
           </p>
         </div>
 
         {/* Global Key Metrics */}
         <div className="flex items-center gap-3 font-mono text-xs">
           <div className="px-3 py-2 rounded-xl bg-neutral-950 border border-neutral-800 text-center">
-            <div className="text-[10px] text-neutral-500 uppercase">Pending OCR Audit</div>
+            <div className="text-[10px] text-neutral-500 uppercase">Pending credential review</div>
             <div className="text-lg font-bold text-amber-400 tabular-nums">
               {pendingCandidates.length}
             </div>
@@ -243,11 +246,12 @@ No further action is required from you at this time. Keep your profile check-in 
                 </div>
 
                 <div className="flex items-center gap-3">
-                  {/* Direct Admin-to-Candidate Email button */}
+                  {/* The production beta does not claim delivery until an email provider is configured. */}
+                  {isDemoMode && (
                   <button
                     onClick={() => {
-                      setEmailSubject(`Update regarding your RAMP Academic Credential audit`);
-                      setEmailBody(`Hi ${selectedCandidate.name},\n\nThis is a message from the RAMP Platform Administrator regarding your academic credentials.\n\n`);
+                      setEmailSubject(`Update regarding your RAMPED Academic Credential audit`);
+                      setEmailBody(`Hi ${selectedCandidate.name},\n\nThis is a message from the RAMPED Platform Administrator regarding your academic credentials.\n\n`);
                       setIsEmailModalOpen(true);
                     }}
                     className="px-3.5 py-1.5 rounded-lg bg-purple-950 text-purple-300 hover:bg-purple-900 border border-purple-800/60 font-bold transition-colors flex items-center gap-1.5 shadow-md"
@@ -256,6 +260,7 @@ No further action is required from you at this time. Keep your profile check-in 
                     <Mail className="w-3.5 h-3.5" />
                     <span>Email Candidate</span>
                   </button>
+                  )}
 
                   <div className="text-right">
                     <div className="text-[10px] text-neutral-500 uppercase font-mono">Current Status</div>
@@ -316,13 +321,15 @@ No further action is required from you at this time. Keep your profile check-in 
                     <div>
                       <h3 className="text-sm font-bold text-white flex items-center gap-1.5">
                         <Sparkles className="w-4 h-4 text-purple-400" />
-                        Google Vision / OCR Extracted Payload
+                        {selectedCandidate.credentialOcrData ? 'OCR extracted fields' : 'Candidate-submitted details'}
                       </h3>
                       <p className="text-xs text-neutral-400">
-                        Automated document text extraction and entity recognition.
+                        {selectedCandidate.credentialOcrData
+                          ? 'Review extracted text against the original document.'
+                          : 'Candidate-provided claims are not independently validated.'}
                       </p>
                     </div>
-                    {selectedCandidate.credentialOcrData && (
+                    {isDemoMode && selectedCandidate.credentialOcrData && (
                       <div className="px-2.5 py-1 rounded-md bg-purple-950/40 border border-purple-800/50 text-[11px] font-mono text-purple-300 font-semibold">
                         Confidence: {selectedCandidate.credentialOcrData.confidenceScore}%
                       </div>
@@ -336,7 +343,7 @@ No further action is required from you at this time. Keep your profile check-in 
                         {selectedCandidate.credentialOcrData?.degreeType || selectedCandidate.degreeTitle}
                       </div>
                       <div className="text-emerald-400 text-[11px]">
-                        ✓ Matches candidate self-reported major
+                        {isDemoMode ? 'Demo: matches sample profile' : 'Compare with the submitted document'}
                       </div>
                     </div>
 
@@ -346,7 +353,7 @@ No further action is required from you at this time. Keep your profile check-in 
                         {selectedCandidate.credentialOcrData?.institution || selectedCandidate.institution}
                       </div>
                       <div className="text-emerald-400 text-[11px]">
-                        ✓ Accredited Higher Education Provider
+                        {isDemoMode ? 'Demo institution data' : 'Verify the institution independently'}
                       </div>
                     </div>
 
@@ -356,7 +363,7 @@ No further action is required from you at this time. Keep your profile check-in 
                         {selectedCandidate.credentialOcrData?.candidateName || selectedCandidate.name}
                       </div>
                       <div className="text-emerald-400 text-[11px]">
-                        ✓ Matches applicant government identity
+                        {isDemoMode ? 'Demo: matches sample profile' : 'Confirm the recipient name on the document'}
                       </div>
                     </div>
 
@@ -370,17 +377,19 @@ No further action is required from you at this time. Keep your profile check-in 
                       <div className="p-3 rounded-xl bg-neutral-950 border border-neutral-800 space-y-1">
                         <div className="text-[10px] text-neutral-500 uppercase">5. Credential / Seal ID</div>
                         <div className="text-white font-semibold truncate">
-                          {selectedCandidate.credentialOcrData?.credentialId || 'STAN-CS-2023-94821'}
+                          {selectedCandidate.credentialOcrData?.credentialId || 'Not provided'}
                         </div>
                       </div>
                     </div>
 
                     {/* Raw OCR Text Log */}
                     <div className="p-3 rounded-xl bg-neutral-950 border border-neutral-800 space-y-1">
-                      <div className="text-[10px] text-neutral-500 uppercase">Raw OCR Scan String</div>
+                      <div className="text-[10px] text-neutral-500 uppercase">
+                        {selectedCandidate.credentialOcrData ? 'OCR text (if available)' : 'Verification reminder'}
+                      </div>
                       <div className="text-[11px] text-neutral-400 line-clamp-3 leading-relaxed">
                         {selectedCandidate.credentialOcrData?.rawOcrText ||
-                          `${selectedCandidate.institution} • DIPLOMA RECORD • ${selectedCandidate.name} • ${selectedCandidate.degreeTitle} • OFFICIAL REGISTRAR ARCHIVE`}
+                          'No OCR extraction is available. Review the submitted document and verify it independently with the institution.'}
                       </div>
                     </div>
                   </div>
@@ -499,7 +508,7 @@ No further action is required from you at this time. Keep your profile check-in 
                     </div>
 
                     <div className="text-xs text-neutral-400 font-mono">
-                      <span>{emp.taxId}</span>
+                      <span>Business check: {emp.businessVerificationStatus || 'not started'}</span>
                       <span aria-hidden="true" className="mx-1.5">·</span>
                       <span>Domain: {emp.corporateDomain}</span>
                       <span aria-hidden="true" className="mx-1.5">·</span>
@@ -559,7 +568,7 @@ No further action is required from you at this time. Keep your profile check-in 
           <div>
             <h3 className="text-base font-bold text-white">Platform Health & Lifecycle Metrics</h3>
             <p className="text-xs text-neutral-400">
-              Overview of the RAMP ecosystem and active talent pools.
+              Overview of the RAMPED ecosystem and active talent pools.
             </p>
           </div>
 
@@ -577,7 +586,7 @@ No further action is required from you at this time. Keep your profile check-in 
               <div className="text-2xl font-bold text-emerald-400 mt-1 tabular-nums">
                 {allVerifiedCandidates.length}
               </div>
-              <div className="text-[10px] text-neutral-400 mt-1">OCR Validated Credentials</div>
+              <div className="text-[10px] text-neutral-400 mt-1">Manually reviewed credentials</div>
             </div>
 
             <div className="p-4 rounded-xl bg-neutral-950 border border-neutral-800">

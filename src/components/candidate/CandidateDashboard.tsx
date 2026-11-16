@@ -41,6 +41,10 @@ interface CandidateDashboardProps {
 export const CandidateDashboard: React.FC<CandidateDashboardProps> = ({ onOpenOnboarding }) => {
   const {
     currentCandidate,
+    authSession,
+    isDemoMode,
+    refreshMarketplace,
+    startPersonaVerification,
     candidates,
     setCurrentCandidateId,
     checkInCandidate,
@@ -59,6 +63,9 @@ export const CandidateDashboard: React.FC<CandidateDashboardProps> = ({ onOpenOn
   const [uploadSuccessMessage, setUploadSuccessMessage] = useState<string | null>(null);
   const [copiedCodeId, setCopiedCodeId] = useState<string | null>(null);
   const [showArchivedInvites, setShowArchivedInvites] = useState(false);
+  const [isStartingIdentityCheck, setIsStartingIdentityCheck] = useState(false);
+  const [identityCheckError, setIdentityCheckError] = useState<string | null>(null);
+  const [hasIdentityConsent, setHasIdentityConsent] = useState(false);
 
   // About Me editing state
   const [aboutMeText, setAboutMeText] = useState(currentCandidate?.aboutMe || '');
@@ -152,20 +159,58 @@ export const CandidateDashboard: React.FC<CandidateDashboardProps> = ({ onOpenOn
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    if (!['application/pdf', 'image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
+      setUploadSuccessMessage('Upload a PDF, JPG, PNG, or WebP credential document.');
+      e.target.value = '';
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      setUploadSuccessMessage('Credential documents must be 5 MB or smaller.');
+      e.target.value = '';
+      return;
+    }
 
     setIsUploading(true);
     const reader = new FileReader();
     reader.onload = async () => {
-      const dataUrl = reader.result as string;
+      if (typeof reader.result !== 'string') {
+        setUploadSuccessMessage('Unable to read this credential document.');
+        setIsUploading(false);
+        return;
+      }
       try {
-        await uploadCandidateCredential(dataUrl);
-        setUploadSuccessMessage('Document uploaded & OCR scanned! Sent to Admin verification queue.');
+        await uploadCandidateCredential(reader.result);
+        setUploadSuccessMessage(
+          'Credential document submitted for manual administrator review.'
+        );
         setTimeout(() => setUploadSuccessMessage(null), 4000);
+      } catch (error) {
+        setUploadSuccessMessage(
+          error instanceof Error ? error.message : 'Unable to submit credential document.'
+        );
       } finally {
         setIsUploading(false);
       }
     };
+    reader.onerror = () => {
+      setUploadSuccessMessage('Unable to read this credential document.');
+      setIsUploading(false);
+    };
     reader.readAsDataURL(file);
+  };
+
+  const handleStartIdentityCheck = async () => {
+    setIsStartingIdentityCheck(true);
+    setIdentityCheckError(null);
+    try {
+      const verificationUrl = await startPersonaVerification('identity');
+      window.location.assign(verificationUrl);
+    } catch (error) {
+      setIdentityCheckError(
+        error instanceof Error ? error.message : 'Unable to start identity verification.'
+      );
+      setIsStartingIdentityCheck(false);
+    }
   };
 
   const toggleCategory = (cat: JobCategory) => {
@@ -198,7 +243,10 @@ export const CandidateDashboard: React.FC<CandidateDashboardProps> = ({ onOpenOn
     try {
       const res = await fetch('/api/gemini/about-me-helper', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(authSession ? { Authorization: `Bearer ${authSession.access_token}` } : {}),
+        },
         body: JSON.stringify({
           action: 'draft',
           tone: activeTone,
@@ -240,7 +288,10 @@ export const CandidateDashboard: React.FC<CandidateDashboardProps> = ({ onOpenOn
     try {
       const res = await fetch('/api/gemini/about-me-helper', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(authSession ? { Authorization: `Bearer ${authSession.access_token}` } : {}),
+        },
         body: JSON.stringify({
           action: 'polish',
           currentText: aboutMeText,
@@ -283,7 +334,10 @@ export const CandidateDashboard: React.FC<CandidateDashboardProps> = ({ onOpenOn
     try {
       const res = await fetch('/api/gemini/about-me-helper', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(authSession ? { Authorization: `Bearer ${authSession.access_token}` } : {}),
+        },
         body: JSON.stringify({
           action: 'evaluate',
           currentText: aboutMeText,
@@ -392,8 +446,8 @@ export const CandidateDashboard: React.FC<CandidateDashboardProps> = ({ onOpenOn
 
             <p className="text-xs text-neutral-400 max-w-2xl leading-relaxed">
               {isArchived
-                ? 'Under RAMP’s strict 14/30 rule, passive candidates who do not check in for 14 days are archived. Data remains encrypted until Day 30 deletion. One click restores your active search status.'
-                : `Last check-in was ${daysInactive === 0 ? 'today' : `${daysInactive} days ago`}. RAMP automatically keeps searches fresh by requiring passive talent to confirm activity every 14 days.`}
+                ? 'Under RAMPED’s strict 14/30 rule, passive candidates who do not check in for 14 days are archived. Data remains encrypted until Day 30 deletion. One click restores your active search status.'
+                : `Last check-in was ${daysInactive === 0 ? 'today' : `${daysInactive} days ago`}. RAMPED automatically keeps searches fresh by requiring passive talent to confirm activity every 14 days.`}
             </p>
           </div>
 
@@ -435,6 +489,62 @@ export const CandidateDashboard: React.FC<CandidateDashboardProps> = ({ onOpenOn
           </div>
         </div>
       </div>
+
+      {!isDemoMode && (
+        <section className="p-5 bg-neutral-900 border border-neutral-800 rounded-2xl flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div className="space-y-1">
+            <div className="flex items-center gap-2 text-sm font-bold text-white">
+              <ShieldCheck className="w-4 h-4 text-emerald-400" />
+              Identity verification
+              <span className="text-[11px] font-medium text-neutral-400 capitalize">
+                {currentCandidate.identityVerificationStatus || 'not started'}
+              </span>
+            </div>
+            <p className="text-xs text-neutral-400 max-w-2xl">
+              Verify your government ID securely with Persona. This is separate from academic credential review; RAMPED does not store your ID images.
+              {currentCandidate.identityVerificationStatus === 'needs_review' &&
+                ' Your result needs human review; contact support if you need help.'}
+            </p>
+            {currentCandidate.identityVerificationStatus !== 'verified' &&
+              currentCandidate.identityVerificationStatus !== 'needs_review' && (
+                <label className="flex items-start gap-2 text-[11px] text-neutral-400 max-w-2xl">
+                  <input
+                    type="checkbox"
+                    checked={hasIdentityConsent}
+                    onChange={(event) => setHasIdentityConsent(event.target.checked)}
+                    className="mt-0.5 accent-emerald-500"
+                  />
+                  <span>
+                    I consent to sharing the information requested in Persona's flow for identity verification. Persona processes my ID; RAMPED stores the result and inquiry reference, not the ID images.
+                  </span>
+                </label>
+              )}
+            {identityCheckError && <p role="alert" className="text-xs text-red-300">{identityCheckError}</p>}
+          </div>
+          <div className="flex gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => void refreshMarketplace().catch((error: unknown) =>
+                setIdentityCheckError(error instanceof Error ? error.message : 'Unable to refresh status.')
+              )}
+              className="px-3 py-2 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-neutral-200 text-xs font-semibold"
+            >
+              Refresh status
+            </button>
+            {currentCandidate.identityVerificationStatus !== 'verified' &&
+              currentCandidate.identityVerificationStatus !== 'needs_review' && (
+                <button
+                  type="button"
+                  onClick={() => void handleStartIdentityCheck()}
+                  disabled={isStartingIdentityCheck || !hasIdentityConsent}
+                  className="px-4 py-2 rounded-lg bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-neutral-950 text-xs font-bold"
+                >
+                  {isStartingIdentityCheck ? 'Opening Persona...' : 'Verify identity'}
+                </button>
+              )}
+          </div>
+        </section>
+      )}
 
       {/* Snooze / Confidential Visibility Banner */}
       {currentCandidate.isSnoozed && (
@@ -641,7 +751,7 @@ export const CandidateDashboard: React.FC<CandidateDashboardProps> = ({ onOpenOn
           <div className="space-y-1">
             <h3 className="text-sm font-semibold text-white">Target Job Categories (Candidate-Driven)</h3>
             <p className="text-xs text-neutral-400">
-              Select specific positions you want to be considered for. In RAMP, candidates choose their own categories—there is no AI misclassification or algorithmic pigeonholing.
+              Select specific positions you want to be considered for. In RAMPED, candidates choose their own categories—there is no AI misclassification or algorithmic pigeonholing.
             </p>
           </div>
 
@@ -1097,23 +1207,25 @@ export const CandidateDashboard: React.FC<CandidateDashboardProps> = ({ onOpenOn
         </div>
       )}
 
-      {/* TAB 2: Credentials & OCR Proof */}
+      {/* TAB 2: Credential submission and review */}
       {activeTab === 'credentials' && (
         <div className="p-6 bg-neutral-900 border border-neutral-800 rounded-2xl space-y-6">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div>
-              <h3 className="text-sm font-semibold text-white">Academic Credential Proof & OCR Registry</h3>
+              <h3 className="text-sm font-semibold text-white">Academic Credential Review</h3>
               <p className="text-xs text-neutral-400">
-                Uploaded diplomas/certificates are scanned via Google Vision / OCR and manually audited by Admin to issue Verified Candidate status.
+                {isDemoMode
+                  ? 'Demo credential data is simulated. It does not represent a real verification.'
+                  : 'Credential documents are private and reviewed manually by an administrator. Uploading a document does not verify it.'}
               </p>
             </div>
 
             <label className="cursor-pointer px-4 py-2 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-white text-xs font-semibold flex items-center gap-2 border border-neutral-700 transition-colors w-fit">
               <Upload className="w-4 h-4" />
-              <span>{isUploading ? 'Scanning OCR...' : 'Upload New Diploma'}</span>
+              <span>{isUploading ? 'Uploading…' : 'Upload New Diploma'}</span>
               <input
                 type="file"
-                accept="image/*,application/pdf"
+                accept="image/jpeg,image/png,image/webp,application/pdf"
                 className="hidden"
                 onChange={handleFileUpload}
                 disabled={isUploading}
@@ -1133,8 +1245,10 @@ export const CandidateDashboard: React.FC<CandidateDashboardProps> = ({ onOpenOn
             {/* Left: OCR Extracted Fields */}
             <div className="space-y-3">
               <div className="flex items-center justify-between">
-                <span className="text-xs font-bold text-neutral-300">OCR Extracted Data</span>
-                {currentCandidate.credentialOcrData && (
+                <span className="text-xs font-bold text-neutral-300">
+                  {currentCandidate.credentialOcrData ? 'OCR Extracted Data' : 'Profile details (not independently verified)'}
+                </span>
+                {isDemoMode && currentCandidate.credentialOcrData && (
                   <span className="text-[11px] font-mono text-emerald-400">
                     Confidence: {currentCandidate.credentialOcrData.confidenceScore}%
                   </span>
@@ -1163,7 +1277,7 @@ export const CandidateDashboard: React.FC<CandidateDashboardProps> = ({ onOpenOn
                 <div className="flex justify-between py-1.5 border-b border-neutral-850">
                   <span className="text-neutral-500">Credential ID</span>
                   <span className="font-mono text-neutral-300">
-                    {currentCandidate.credentialOcrData?.credentialId || 'PENDING-REG'}
+                    {currentCandidate.credentialOcrData?.credentialId || 'Not extracted'}
                   </span>
                 </div>
                 <div className="flex justify-between py-1.5">
@@ -1234,18 +1348,18 @@ export const CandidateDashboard: React.FC<CandidateDashboardProps> = ({ onOpenOn
             )}
           </div>
 
-          {/* Strict RAMP Policy Banner: There is NO Reply inside RAMP */}
+          {/* Strict RAMPED Policy Banner: There is NO Reply inside RAMPED */}
           <div className="p-4 rounded-xl bg-amber-500/10 border border-amber-500/20 text-xs text-amber-300 flex items-start gap-3">
             <MessageSquareOff className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
             <div className="space-y-1">
               <div className="font-bold text-amber-200 flex items-center gap-2">
-                <span>Notice: There is NO reply inside RAMP</span>
+                <span>Notice: There is NO reply inside RAMPED</span>
                 <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 font-mono font-normal">
                   Direct External Outreach Only
                 </span>
               </div>
               <p className="text-amber-300/90 leading-relaxed text-[11px]">
-                RAMP operates without an in-app messaging or reply inbox. Verified employers send you direct invitations with clear instructions on <strong>who to contact in their organization</strong>. To respond or interview, reach out directly to the designated representative via email, phone, or interview booking link below.
+                RAMPED operates without an in-app messaging or reply inbox. Verified employers send you direct invitations with clear instructions on <strong>who to contact in their organization</strong>. To respond or interview, reach out directly to the designated representative via email, phone, or interview booking link below.
               </p>
             </div>
           </div>
@@ -1269,7 +1383,7 @@ export const CandidateDashboard: React.FC<CandidateDashboardProps> = ({ onOpenOn
                   const contactPersonEmail = invite.contactEmail || invite.recruiterEmail || 'recruiter@company.com';
                   const contactPersonPhone = invite.contactPhone;
                   const schedulingUrl = invite.schedulingUrl;
-                  const refCode = invite.referenceCode || `RAMP-REF-${invite.id.substring(4)}`;
+                  const refCode = invite.referenceCode || `RAMPED-REF-${invite.id.substring(4)}`;
 
                   return (
                     <div
@@ -1290,7 +1404,7 @@ export const CandidateDashboard: React.FC<CandidateDashboardProps> = ({ onOpenOn
                             {invite.candidateContactedExternally && (
                               <span className="text-xs px-2 py-0.5 rounded bg-emerald-950/70 text-emerald-400 border border-emerald-800/50 font-mono flex items-center gap-1 font-medium">
                                 <CheckCircle className="w-3 h-3" />
-                                Contacted Outside RAMP
+                                Contacted Outside RAMPED
                               </span>
                             )}
                             {invite.candidateArchived && (
@@ -1397,7 +1511,7 @@ export const CandidateDashboard: React.FC<CandidateDashboardProps> = ({ onOpenOn
                             <div className="text-neutral-200 font-mono text-xs flex items-center gap-1.5">
                               <Mail className="w-3.5 h-3.5 text-blue-400 shrink-0" />
                               <a
-                                href={`mailto:${contactPersonEmail}?subject=Re:%20RAMP%20Invitation%20for%20${encodeURIComponent(invite.jobTitle)}%20[Ref:%20${refCode}]&body=Hi%20${encodeURIComponent(contactPersonName)},%0D%0A%0D%0AI%20received%20your%20direct%20invitation%20on%20RAMP%20for%20the%20${encodeURIComponent(invite.jobTitle)}%20role%20(Reference%20Code:%20${refCode}).%0D%0A%0D%0AI%20would%20love%20to%20connect%20to%20discuss%20the%20position.%0D%0A%0D%0ABest%20regards,%0D%0A${encodeURIComponent(currentCandidate.name)}`}
+                                href={`mailto:${contactPersonEmail}?subject=Re:%20RAMPED%20Invitation%20for%20${encodeURIComponent(invite.jobTitle)}%20[Ref:%20${refCode}]&body=Hi%20${encodeURIComponent(contactPersonName)},%0D%0A%0D%0AI%20received%20your%20direct%20invitation%20on%20RAMPED%20for%20the%20${encodeURIComponent(invite.jobTitle)}%20role%20(Reference%20Code:%20${refCode}).%0D%0A%0D%0AI%20would%20love%20to%20connect%20to%20discuss%20the%20position.%0D%0A%0D%0ABest%20regards,%0D%0A${encodeURIComponent(currentCandidate.name)}`}
                                 className="text-blue-400 hover:underline"
                               >
                                 {contactPersonEmail}
@@ -1426,16 +1540,16 @@ export const CandidateDashboard: React.FC<CandidateDashboardProps> = ({ onOpenOn
                           </p>
                         </div>
 
-                        {/* Direct Action Buttons outside RAMP */}
+                        {/* Direct Action Buttons outside RAMPED */}
                         <div className="pt-2 flex flex-wrap items-center justify-between gap-2 border-t border-blue-900/30">
                           <div className="text-[11px] text-amber-400 flex items-center gap-1.5">
                             <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
-                            <span>No reply inside RAMP. Connect directly via:</span>
+                            <span>No reply inside RAMPED. Connect directly via:</span>
                           </div>
 
                           <div className="flex flex-wrap items-center gap-2">
                             <a
-                              href={`mailto:${contactPersonEmail}?subject=Re:%20RAMP%20Invitation%20for%20${encodeURIComponent(invite.jobTitle)}%20[Ref:%20${refCode}]&body=Hi%20${encodeURIComponent(contactPersonName)},%0D%0A%0D%0AI%20received%20your%20direct%20invitation%20on%20RAMP%20for%20the%20${encodeURIComponent(invite.jobTitle)}%20role%20(Reference%20Code:%20${refCode}).%0D%0A%0D%0AI%20would%20love%20to%20connect%20to%20discuss%20the%20opportunity.%0D%0A%0D%0ABest%20regards,%0D%0A${encodeURIComponent(currentCandidate.name)}`}
+                              href={`mailto:${contactPersonEmail}?subject=Re:%20RAMPED%20Invitation%20for%20${encodeURIComponent(invite.jobTitle)}%20[Ref:%20${refCode}]&body=Hi%20${encodeURIComponent(contactPersonName)},%0D%0A%0D%0AI%20received%20your%20direct%20invitation%20on%20RAMPED%20for%20the%20${encodeURIComponent(invite.jobTitle)}%20role%20(Reference%20Code:%20${refCode}).%0D%0A%0D%0AI%20would%20love%20to%20connect%20to%20discuss%20the%20opportunity.%0D%0A%0D%0ABest%20regards,%0D%0A${encodeURIComponent(currentCandidate.name)}`}
                               className="px-3.5 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-semibold text-xs transition-colors flex items-center gap-1.5 shadow-sm shadow-blue-600/20"
                             >
                               <Mail className="w-3.5 h-3.5" />
@@ -1503,7 +1617,7 @@ export const CandidateDashboard: React.FC<CandidateDashboardProps> = ({ onOpenOn
               <div>
                 <div className="font-semibold text-neutral-200">Email Address (Mandatory)</div>
                 <div className="text-neutral-500 text-[11px]">
-                  Required by RAMP so verified employers can reach you with official job offers.
+                  Required by RAMPED so verified employers can reach you with official job offers.
                 </div>
               </div>
               <span className="font-mono text-emerald-400 font-semibold px-2 py-1 bg-emerald-950/40 rounded border border-emerald-900/50">

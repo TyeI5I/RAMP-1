@@ -1,25 +1,35 @@
 import React, { useState } from 'react';
 import { useRamp } from '../../context/RampContext';
-import { ShieldAlert, Building2, CheckCircle2, Clock, ArrowRight, ShieldCheck } from 'lucide-react';
+import { ShieldAlert, Building2, Clock } from 'lucide-react';
 
 export const EmployerVerificationGate: React.FC = () => {
-  const { currentEmployer, registerEmployer, updateEmployerProfile, setCurrentRole } = useRamp();
+  const {
+    currentEmployer,
+    registerEmployer,
+    updateEmployerProfile,
+    setCurrentRole,
+    isDemoMode,
+    authSession,
+    refreshMarketplace,
+    startPersonaVerification,
+  } = useRamp();
 
   const [companyName, setCompanyName] = useState(currentEmployer?.companyName || '');
-  const [taxId, setTaxId] = useState(currentEmployer?.taxId || 'EIN: 84-3991204');
-  const [corporateDomain, setCorporateDomain] = useState(currentEmployer?.corporateDomain || 'linearcorp.com');
-  const [websiteUrl, setWebsiteUrl] = useState(currentEmployer?.websiteUrl || 'https://linearcorp.com');
-  const [recruiterName, setRecruiterName] = useState(currentEmployer?.recruiterName || 'Marcus Vance');
-  const [recruiterTitle, setRecruiterTitle] = useState(currentEmployer?.recruiterTitle || 'Head of Engineering Talent');
-  const [email, setEmail] = useState(currentEmployer?.email || 'marcus@linearcorp.com');
-  const [submitted, setSubmitted] = useState(false);
+  const [corporateDomain, setCorporateDomain] = useState(currentEmployer?.corporateDomain || '');
+  const [websiteUrl, setWebsiteUrl] = useState(currentEmployer?.websiteUrl || '');
+  const [recruiterName, setRecruiterName] = useState(currentEmployer?.recruiterName || '');
+  const [recruiterTitle, setRecruiterTitle] = useState(currentEmployer?.recruiterTitle || '');
+  const [email, setEmail] = useState(currentEmployer?.email || authSession?.user.email || '');
+  const [isStartingVerification, setIsStartingVerification] = useState(false);
+  const [verificationError, setVerificationError] = useState<string | null>(null);
+  const [hasBusinessConsent, setHasBusinessConsent] = useState(false);
+  const isManualReview = currentEmployer?.businessVerificationStatus === 'needs_review';
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (currentEmployer) {
       updateEmployerProfile({
         companyName,
-        taxId,
         corporateDomain,
         websiteUrl,
         recruiterName,
@@ -30,7 +40,6 @@ export const EmployerVerificationGate: React.FC = () => {
     } else {
       registerEmployer({
         companyName,
-        taxId,
         corporateDomain,
         websiteUrl,
         recruiterName,
@@ -39,7 +48,20 @@ export const EmployerVerificationGate: React.FC = () => {
         verificationStatus: 'pending',
       });
     }
-    setSubmitted(true);
+  };
+
+  const handleStartVerification = async () => {
+    setIsStartingVerification(true);
+    setVerificationError(null);
+    try {
+      const verificationUrl = await startPersonaVerification('employer');
+      window.location.assign(verificationUrl);
+    } catch (error) {
+      setVerificationError(
+        error instanceof Error ? error.message : 'Unable to start business verification.'
+      );
+      setIsStartingVerification(false);
+    }
   };
 
   const isPending = currentEmployer?.verificationStatus === 'pending';
@@ -54,23 +76,69 @@ export const EmployerVerificationGate: React.FC = () => {
         <div>
           <h2 className="text-xl font-bold text-white tracking-tight">Employer Verification Gate</h2>
           <p className="text-xs text-neutral-400">
-            RAMP protects passive candidates. All hiring entities must pass corporate business verification before accessing candidate search.
+            RAMPED protects passive candidates. All hiring entities must pass corporate business verification before accessing candidate search.
           </p>
         </div>
       </div>
 
-      {isPending && (
+      {(isPending || isRejected) && (
         <div className="p-4 rounded-xl bg-amber-950/20 border border-amber-800/40 text-amber-200 space-y-2">
           <div className="flex items-center gap-2 font-bold text-xs uppercase tracking-wider text-amber-400">
             <Clock className="w-4 h-4" />
-            Verification In Progress
+            {isManualReview ? 'Manual Review In Progress' : isRejected ? 'Verification Needs Attention' : 'Verification Required'}
           </div>
           <p className="text-xs text-neutral-300">
-            Your corporate application for <strong>{currentEmployer?.companyName}</strong> (Tax ID: {currentEmployer?.taxId}) has been submitted to the RAMP Admin Verification Queue.
+            {isManualReview
+              ? 'Persona could not make an automatic decision. Your application remains in the admin review queue; do not submit another inquiry.'
+              : <>Complete Persona's secure business verification for <strong>{currentEmployer?.companyName}</strong>. Your business tax ID is collected in Persona's flow, not stored by RAMPED.</>}
           </p>
-          <div className="text-[11px] text-neutral-400 pt-1">
-            Tip: Switch to the <strong>Platform Admin</strong> view in the top bar to audit and approve this employer instantly.
-          </div>
+          {!isManualReview && (
+            <label className="flex items-start gap-2 text-[11px] text-neutral-400 max-w-xl">
+              <input
+                type="checkbox"
+                checked={hasBusinessConsent}
+                onChange={(event) => setHasBusinessConsent(event.target.checked)}
+                className="mt-0.5 accent-amber-500"
+              />
+              <span>
+                I consent to sharing the business and representative information requested in Persona's flow for employer verification. RAMPED stores the result and inquiry reference, not the EIN.
+              </span>
+            </label>
+          )}
+          {isManualReview ? (
+            <button
+              type="button"
+              onClick={() => void refreshMarketplace().catch((error: unknown) =>
+                setVerificationError(error instanceof Error ? error.message : 'Unable to refresh status.')
+              )}
+              className="px-4 py-2 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-neutral-100 font-bold text-xs"
+            >
+              Refresh review status
+            </button>
+          ) : !isDemoMode ? (
+            <button
+              type="button"
+              onClick={() => void handleStartVerification()}
+              disabled={isStartingVerification || !currentEmployer || !hasBusinessConsent}
+              className="px-4 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-neutral-950 font-bold text-xs"
+            >
+              {isStartingVerification ? 'Opening secure verification...' : 'Start secure business verification'}
+            </button>
+          ) : (
+            <p className="text-[11px] text-neutral-400">Live Persona verification is available in production only.</p>
+          )}
+          {!isDemoMode && !isManualReview && (
+            <button
+              type="button"
+              onClick={() => void refreshMarketplace().catch((error: unknown) =>
+                setVerificationError(error instanceof Error ? error.message : 'Unable to refresh status.')
+              )}
+              className="px-4 py-2 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-neutral-100 font-bold text-xs"
+            >
+              Refresh status
+            </button>
+          )}
+          {verificationError && <p role="alert" className="text-xs text-red-300">{verificationError}</p>}
         </div>
       )}
 
@@ -81,41 +149,25 @@ export const EmployerVerificationGate: React.FC = () => {
             Business Verification Rejected
           </div>
           <p className="text-xs text-neutral-300">
-            {currentEmployer?.rejectionReason || 'Corporate tax ID or corporate domain email failed legal compliance check.'}
+            {currentEmployer?.rejectionReason || 'Persona could not verify the business details. Review them and try again, or contact support.'}
           </p>
-          <p className="text-[11px] text-neutral-400">Please review your credentials below and re-submit for review.</p>
+          <p className="text-[11px] text-neutral-400">Please review the details below and restart verification, or contact support if you believe this is incorrect.</p>
         </div>
       )}
 
       <form onSubmit={handleSubmit} className="space-y-4 pt-2">
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          <div>
-            <label className="block text-xs font-semibold text-neutral-300 mb-1.5">
-              Legal Business Name *
-            </label>
-            <input
-              type="text"
-              required
-              value={companyName}
-              onChange={(e) => setCompanyName(e.target.value)}
-              placeholder="Linear Dynamics Corp"
-              className="w-full px-3 py-2 text-xs bg-neutral-950 border border-neutral-800 rounded-lg text-white placeholder-neutral-500 focus:outline-none focus:border-amber-500"
-            />
-          </div>
-
-          <div>
-            <label className="block text-xs font-semibold text-neutral-300 mb-1.5">
-              Business Tax ID (EIN) *
-            </label>
-            <input
-              type="text"
-              required
-              value={taxId}
-              onChange={(e) => setTaxId(e.target.value)}
-              placeholder="EIN: 84-3991204"
-              className="w-full px-3 py-2 text-xs bg-neutral-950 border border-neutral-800 rounded-lg text-white placeholder-neutral-500 font-mono focus:outline-none focus:border-amber-500"
-            />
-          </div>
+        <div>
+          <label className="block text-xs font-semibold text-neutral-300 mb-1.5">
+            Legal Business Name *
+          </label>
+          <input
+            type="text"
+            required
+            value={companyName}
+            onChange={(e) => setCompanyName(e.target.value)}
+            placeholder="Linear Dynamics Corp"
+            className="w-full px-3 py-2 text-xs bg-neutral-950 border border-neutral-800 rounded-lg text-white placeholder-neutral-500 focus:outline-none focus:border-amber-500"
+          />
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -158,7 +210,7 @@ export const EmployerVerificationGate: React.FC = () => {
               required
               value={recruiterName}
               onChange={(e) => setRecruiterName(e.target.value)}
-              placeholder="Sarah Jenkins"
+              placeholder="Recruiter name"
               className="w-full px-3 py-2 text-xs bg-neutral-950 border border-neutral-800 rounded-lg text-white placeholder-neutral-500 focus:outline-none focus:border-amber-500"
             />
           </div>
@@ -179,20 +231,20 @@ export const EmployerVerificationGate: React.FC = () => {
         </div>
 
         <div className="pt-4 flex items-center justify-between">
-          <button
+          {isDemoMode && <button
             type="button"
             onClick={() => setCurrentRole('admin')}
             className="text-xs text-neutral-400 hover:text-white underline underline-offset-4"
           >
             Switch to Admin View to Approve Employers
-          </button>
+          </button>}
 
           <button
             type="submit"
             className="px-6 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-neutral-950 font-bold text-xs transition-colors flex items-center gap-2 shadow-lg shadow-amber-500/10"
           >
             <Building2 className="w-4 h-4" />
-            Submit Corporate Verification
+            Save Business Profile
           </button>
         </div>
       </form>

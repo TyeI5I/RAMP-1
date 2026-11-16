@@ -34,7 +34,7 @@ export const GeminiCareerStudioModal: React.FC<GeminiCareerStudioModalProps> = (
   onClose,
   initialMode = 'general',
 }) => {
-  const { currentCandidate, updateCandidateProfile } = useRamp();
+  const { currentCandidate, updateCandidateProfile, authSession } = useRamp();
 
   const [mode, setMode] = useState<'resume' | 'cover_letter' | 'about_me' | 'general'>(initialMode);
   const [model, setModel] = useState<string>('gemini-3.8-flash');
@@ -50,7 +50,7 @@ export const GeminiCareerStudioModal: React.FC<GeminiCareerStudioModalProps> = (
     {
       id: 'msg-welcome',
       role: 'model',
-      content: `Hi ${currentCandidate?.name?.split(' ')[0] || 'there'}! I'm your **Gemini Career Assistant** on RAMP.
+      content: `Hi ${currentCandidate?.name?.split(' ')[0] || 'there'}! I'm your **Gemini Career Assistant** on RAMPED.
 
 I have your verified background loaded:
 • **Degree:** ${currentCandidate?.degreeTitle || 'Bachelor of Science'} (${currentCandidate?.institution || 'University'})
@@ -95,7 +95,10 @@ How can I help you stand out to verified recruiters today?
     try {
       const response = await fetch('/api/gemini/chat', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(authSession ? { Authorization: `Bearer ${authSession.access_token}` } : {}),
+        },
         body: JSON.stringify({
           messages: [...messages, userMsg].map((m) => ({
             role: m.role,
@@ -169,7 +172,7 @@ Feel free to customize or ask me to tailor it for a specific role!`,
       );
     } else if (promptType === 'about_me') {
       sendMessage(
-        `Help me craft an authentic "About Me" personal narrative touching on RAMP's 5 essential checklist pillars:
+        `Help me craft an authentic "About Me" personal narrative touching on RAMPED's 5 essential checklist pillars:
 1. Core values and work philosophy (intellectual humility, craft integrity).
 2. Collaboration and communication style (psychological safety, feedback).
 3. Curiosity and problem-solving mindset (what technical puzzles excite me).
@@ -216,7 +219,7 @@ Here is my current draft or profile context: "${
       {
         id: `msg-${Date.now()}`,
         role: 'model',
-        content: `Chat history reset. How would you like Gemini to help with your RAMP profile today?`,
+        content: `Chat history reset. How would you like Gemini to help with your RAMPED profile today?`,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       },
     ]);
@@ -435,7 +438,7 @@ Here is my current draft or profile context: "${
 
           <div className="flex items-center justify-between text-[11px] text-neutral-500 font-mono">
             <span>Powered by @google/genai SDK · Server-side processing</span>
-            <span>RAMP Privacy: Your data is never shared with third parties</span>
+            <span>RAMPED Privacy: Your data is never shared with third parties</span>
           </div>
         </div>
       </div>

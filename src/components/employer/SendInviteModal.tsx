@@ -23,6 +23,7 @@ interface SendInviteModalProps {
 
 export const SendInviteModal: React.FC<SendInviteModalProps> = ({ candidate, onClose }) => {
   const { currentEmployer, sendJobInvite } = useRamp();
+  const isDemoMode = import.meta.env.DEV;
 
   // Position details
   const [jobTitle, setJobTitle] = useState(
@@ -32,32 +33,32 @@ export const SendInviteModal: React.FC<SendInviteModalProps> = ({ candidate, onC
   const [compensationRange, setCompensationRange] = useState('$195,000 - $235,000 + Equity & Bonus');
   const [locationType, setLocationType] = useState('100% Remote (US/Canada)');
   const [jobDescription, setJobDescription] = useState(
-    `We came across your verified degree from ${candidate?.institution || 'your university'} and your passive profile on RAMP. Our team is expanding our infrastructure and we believe your verified skill set matches what we need for this high-impact position.`
+    `We came across your verified degree from ${candidate?.institution || 'your university'} and your passive profile on RAMPED. Our team is expanding our infrastructure and we believe your verified skill set matches what we need for this high-impact position.`
   );
 
   // Designated company contact information (Who to contact in that company)
   const [contactName, setContactName] = useState(
-    currentEmployer?.recruiterName || 'Sarah Jenkins'
+    currentEmployer?.recruiterName || (isDemoMode ? 'Sarah Jenkins' : '')
   );
   const [contactTitle, setContactTitle] = useState(
-    currentEmployer?.recruiterTitle || 'Director of Talent Acquisition'
+    currentEmployer?.recruiterTitle || (isDemoMode ? 'Director of Talent Acquisition' : '')
   );
   const [contactEmail, setContactEmail] = useState(
-    currentEmployer?.email || 'sarah.jenkins@apexinnovations.tech'
+    currentEmployer?.email || (isDemoMode ? 'sarah.jenkins@apexinnovations.tech' : '')
   );
   const [contactPhone, setContactPhone] = useState(
-    currentEmployer?.phone || '+1 (415) 890-4412'
+    currentEmployer?.phone || (isDemoMode ? '+1 (415) 890-4412' : '')
   );
   const [schedulingUrl, setSchedulingUrl] = useState(
-    'https://calendly.com/talent-team/intro-chat'
+    isDemoMode ? 'https://calendly.com/talent-team/intro-chat' : ''
   );
 
   // Auto-generate reference code
   const [referenceCode, setReferenceCode] = useState(
-    () => `RAMP-${(currentEmployer?.companyName || 'INV').substring(0, 3).toUpperCase()}-${Math.floor(1000 + Math.random() * 9000)}`
+    () => `RAMPED-${(currentEmployer?.companyName || 'INV').substring(0, 3).toUpperCase()}-${Math.floor(1000 + Math.random() * 9000)}`
   );
 
-  // Clear instructions to the candidate on who to contact in that company (No reply in RAMP)
+  // Clear instructions to the candidate on who to contact in that company (No reply in RAMPED)
   const generateDefaultInstructions = (
     cName = contactName,
     cTitle = contactTitle,
@@ -73,7 +74,7 @@ export const SendInviteModal: React.FC<SendInviteModalProps> = ({ candidate, onC
     if (sUrl) {
       text += `. You may also book an introductory sync directly at ${sUrl}`;
     }
-    text += `. Please quote reference code ${ref} in your correspondence.\n\nIMPORTANT: There is NO reply inside RAMP. All communications are conducted directly with our team.`;
+    text += `. Please quote reference code ${ref} in your correspondence.\n\nIMPORTANT: There is NO reply inside RAMPED. All communications are conducted directly with our team.`;
     return text;
   };
 
@@ -85,7 +86,7 @@ export const SendInviteModal: React.FC<SendInviteModalProps> = ({ candidate, onC
   if (!candidate) return null;
 
   const handleRegenerateCode = () => {
-    const newCode = `RAMP-${(currentEmployer?.companyName || 'INV').substring(0, 3).toUpperCase()}-${Math.floor(1000 + Math.random() * 9000)}`;
+    const newCode = `RAMPED-${(currentEmployer?.companyName || 'INV').substring(0, 3).toUpperCase()}-${Math.floor(1000 + Math.random() * 9000)}`;
     setReferenceCode(newCode);
     setContactInstructions(generateDefaultInstructions(contactName, contactTitle, contactEmail, contactPhone, schedulingUrl, newCode));
   };
@@ -159,15 +160,15 @@ export const SendInviteModal: React.FC<SendInviteModalProps> = ({ candidate, onC
           </button>
         </div>
 
-        {/* Policy Alert Banner: There is NO reply inside RAMP */}
+        {/* Policy Alert Banner: There is NO reply inside RAMPED */}
         <div className="p-4 bg-amber-500/10 border-b border-amber-500/20 text-xs text-amber-300 flex items-start gap-3">
           <AlertTriangle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
           <div className="space-y-1">
             <div className="font-bold text-amber-200">
-              RAMP Communication Policy: There is NO Reply Inside RAMP
+              RAMPED Communication Policy: There is NO Reply Inside RAMPED
             </div>
             <p className="text-amber-300/90 leading-relaxed text-[11px]">
-              RAMP operates strictly as a discovery and credential verification platform. Candidates do not reply or chat inside RAMP. Your invitation must give <strong>clear instructions on who to contact in your company</strong> so the candidate can contact them directly via email, phone, or calendar booking.
+              RAMPED operates strictly as a discovery and credential verification platform. Candidates do not reply or chat inside RAMPED. Your invitation must give <strong>clear instructions on who to contact in your company</strong> so the candidate can contact them directly via email, phone, or calendar booking.
             </p>
           </div>
         </div>
@@ -197,7 +198,7 @@ export const SendInviteModal: React.FC<SendInviteModalProps> = ({ candidate, onC
             </div>
 
             <p className="text-[11px] text-neutral-400">
-              Specify the exact person the candidate should reach out to outside of RAMP.
+              Specify the exact person the candidate should reach out to outside of RAMPED.
             </p>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
@@ -212,7 +213,7 @@ export const SendInviteModal: React.FC<SendInviteModalProps> = ({ candidate, onC
                   onChange={(e) =>
                     handleUpdateContactDetails(e.target.value, contactTitle, contactEmail, contactPhone, schedulingUrl)
                   }
-                  placeholder="e.g. Sarah Jenkins"
+                  placeholder="Enter contact name"
                   className="w-full px-3 py-2 text-xs bg-neutral-900 border border-neutral-800 rounded-lg text-white focus:outline-none focus:border-blue-500"
                 />
               </div>
@@ -261,7 +262,7 @@ export const SendInviteModal: React.FC<SendInviteModalProps> = ({ candidate, onC
                   onChange={(e) =>
                     handleUpdateContactDetails(contactName, contactTitle, contactEmail, e.target.value, schedulingUrl)
                   }
-                  placeholder="+1 (415) 890-4412"
+                  placeholder="Include country code if applicable"
                   className="w-full px-3 py-2 text-xs bg-neutral-900 border border-neutral-800 rounded-lg text-white focus:outline-none focus:border-blue-500 font-mono"
                 />
               </div>

@@ -1,6 +1,22 @@
-# RAMP Changelog
+# RAMPED Changelog
 
-All notable changes to the RAMP project (Recruiter & Applicant Matching Platform) are documented here.
+All notable changes to RAMPED (Recruiter & Applicant Matching Platform for Employment and Discovery) are documented here.
+
+## [Unreleased]
+
+### Added
+- Supabase candidate/employer sign-in, persistent marketplace profiles, invites, notifications, and server-enforced roles.
+- Private-beta email allowlist, administrator allowlist, readiness endpoint, and portable production start command.
+- Production builds exclude the development demo profiles and seed data.
+- Candidate contact/document privacy filtering, manual credential review, subscription-gated search, and server-side invite quotas.
+- Stripe-hosted recurring Checkout, signed idempotent webhook processing, and customer portal sessions.
+- Resend transactional email outbox for invitations, verification updates, administrator messages, and lifecycle notices.
+- Protected inactivity scheduler with 14/30-day candidate lifecycle processing, JSON account exports, and self-service account deletion with subscription cancellation.
+
+### Limitations
+- Resend credentials, verified sender domain, database migration, and Render Cron Job must be configured before email and lifecycle automation run.
+- Legally reviewed Terms/Privacy policies remain launch blockers.
+- External Supabase, Stripe, Gemini configuration, and end-to-end test-mode validation are still required.
 
 ## [v0.1.0] - 2026-10-07
 

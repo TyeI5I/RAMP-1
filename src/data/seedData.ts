@@ -995,10 +995,10 @@ export const INITIAL_EMPLOYERS: EmployerProfile[] = [
     invoices: [
       {
         id: 'inv-rec-seed-1',
-        invoiceNumber: 'INV-RAMP-2026-8821',
+        invoiceNumber: 'INV-RAMPED-2026-8821',
         employerId: 'emp-001',
         companyName: 'Apex Innovations',
-        planName: 'RAMP Tier 2 · Real-Time Instant Alerts',
+        planName: 'RAMPED Tier 2 · Real-Time Instant Alerts',
         tier: 'tier2',
         cadence: 'annual',
         amount: 5990,
@@ -1089,7 +1089,7 @@ export const INITIAL_JOB_INVITES: JobInvite[] = [
     contactEmail: 'sarah.jenkins@apexinnovations.tech',
     contactPhone: '+1 (415) 890-4412',
     schedulingUrl: 'https://calendly.com/sarah-jenkins-apex/intro-chat',
-    referenceCode: 'RAMP-APX-4412',
+    referenceCode: 'RAMPED-APX-4412',
     recruiterName: 'Sarah Jenkins',
     recruiterTitle: 'Director of Talent Acquisition',
     recruiterEmail: 'sarah.jenkins@apexinnovations.tech',
@@ -1103,7 +1103,7 @@ export const INITIAL_JOB_INVITES: JobInvite[] = [
     jobDescription:
       'We noticed your verified Stanford CS credential and extensive microservice experience. We are architecting a next-generation real-time data sync pipeline handling millions of concurrent subscribers and would love to invite you to discuss our lead position.',
     contactInstructions:
-      'To respond, please contact Sarah Jenkins directly at sarah.jenkins@apexinnovations.tech or book an intro call at calendly.com/sarah-jenkins-apex/intro-chat quoting reference code RAMP-APX-4412. Please note: RAMP has no internal reply or messaging system; all outreach is conducted directly with Apex Innovations.',
+      'To respond, please contact Sarah Jenkins directly at sarah.jenkins@apexinnovations.tech or book an intro call at calendly.com/sarah-jenkins-apex/intro-chat quoting reference code RAMPED-APX-4412. Please note: RAMPED has no internal reply or messaging system; all outreach is conducted directly with Apex Innovations.',
     sentAt: '2026-09-27T14:30:00Z',
     status: 'pending',
     candidateContactedExternally: false,
@@ -1133,7 +1133,7 @@ export const INITIAL_JOB_INVITES: JobInvite[] = [
     jobDescription:
       'Your verified MIT Master degree and research on multimodal transformer latency match our team requirements exactly. We are expanding our proprietary foundation modeling team.',
     contactInstructions:
-      'To respond, please email Michael Thorne directly at michael.thorne@vanguardsystems.io with reference code VANGUARD-QUANT-2026, or dial his direct line at +1 (617) 555-0199. Reminder: There is no reply function inside RAMP; please contact Michael directly.',
+      'To respond, please email Michael Thorne directly at michael.thorne@vanguardsystems.io with reference code VANGUARD-QUANT-2026, or dial his direct line at +1 (617) 555-0199. Reminder: There is no reply function inside RAMPED; please contact Michael directly.',
     sentAt: '2026-09-28T09:15:00Z',
     status: 'pending',
     candidateContactedExternally: false,
@@ -1147,7 +1147,7 @@ export const INITIAL_NOTIFICATIONS: PushNotification[] = [
     id: 'notif-001',
     userId: 'cand-001',
     title: 'New Direct Job Invite from Apex Innovations',
-    message: 'Apex Innovations sent you a direct invite for "Senior Distributed Systems Engineer". Contact Sarah Jenkins directly outside RAMP via email.',
+    message: 'Apex Innovations sent you a direct invite for "Senior Distributed Systems Engineer". Contact Sarah Jenkins directly outside RAMPED via email.',
     type: 'invite',
     timestamp: '2026-09-27T14:30:00Z',
     read: true,
@@ -1156,7 +1156,7 @@ export const INITIAL_NOTIFICATIONS: PushNotification[] = [
     id: 'notif-002',
     userId: 'cand-002',
     title: 'New Direct Job Invite from Vanguard Systems',
-    message: 'Vanguard Systems sent you a direct invite for "Lead AI & Machine Learning Scientist". Contact Michael Thorne directly outside RAMP.',
+    message: 'Vanguard Systems sent you a direct invite for "Lead AI & Machine Learning Scientist". Contact Michael Thorne directly outside RAMPED.',
     type: 'invite',
     timestamp: '2026-09-28T09:15:00Z',
     read: false,
@@ -1164,7 +1164,7 @@ export const INITIAL_NOTIFICATIONS: PushNotification[] = [
   {
     id: 'notif-003',
     userId: 'cand-004',
-    title: 'Check in to keep your profile active on RAMP',
+    title: 'Check in to keep your profile active on RAMPED',
     message: 'Your profile has been inactive for 11 days. In 3 days, it will be automatically archived from employer searches.',
     type: 'inactivity_warning',
     timestamp: '2026-09-28T08:00:00Z',
@@ -1182,7 +1182,7 @@ export const INITIAL_NOTIFICATIONS: PushNotification[] = [
   {
     id: 'notif-005',
     userId: 'cand-006',
-    title: 'Your RAMP Profile Has Been Archived',
+    title: 'Your RAMPED Profile Has Been Archived',
     message: 'Your profile is now hidden from employer searches due to 14 days of inactivity. Restore anytime in 1 click.',
     type: 'archived',
     timestamp: '2026-09-27T00:00:00Z',
@@ -1205,26 +1205,26 @@ export const INITIAL_EMAILS: EmailLog[] = [
     toEmail: 'elena.rostova@stanford.alumni.edu',
     toName: 'Elena Rostova',
     subject: 'Direct Job Invite: Senior Distributed Systems Engineer at Apex Innovations [No In-App Reply]',
-    senderName: 'Sarah Jenkins (Apex Innovations via RAMP)',
+    senderName: 'Sarah Jenkins (Apex Innovations via RAMPED)',
     sentAt: '2026-09-27T14:30:00Z',
     category: 'job_invite',
     htmlBody: `
       <div style="font-family: 'Plus Jakarta Sans', system-ui, sans-serif; max-width: 620px; margin: 0 auto; padding: 32px; background: #ffffff; border: 1px solid #e2e8f0; border-radius: 12px; color: #0f172a;">
         <div style="display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #f1f5f9; padding-bottom: 20px; margin-bottom: 24px;">
           <div>
-            <span style="font-size: 18px; font-weight: 800; letter-spacing: -0.02em; color: #0f172a;">RAMP</span>
+            <span style="font-size: 18px; font-weight: 800; letter-spacing: -0.02em; color: #0f172a;">RAMPED</span>
             <span style="color: #64748b; font-size: 13px; margin-left: 8px;">Direct Recruiter Invite</span>
           </div>
           <span style="background: #f1f5f9; color: #334155; font-size: 12px; padding: 4px 10px; border-radius: 6px; font-weight: 500;">Verified Employer</span>
         </div>
 
         <div style="background: #fffbeb; border-left: 4px solid #f59e0b; padding: 14px 16px; margin-bottom: 20px; border-radius: 4px;">
-          <strong style="color: #92400e; font-size: 13px; display: block; margin-bottom: 4px;">⚠️ Important Notice: There is NO reply inside RAMP</strong>
-          <span style="color: #78350f; font-size: 12px; line-height: 1.5;">RAMP does not operate an internal candidate inbox or chat. To respond, reach out directly to the designated company contact using the instructions below.</span>
+          <strong style="color: #92400e; font-size: 13px; display: block; margin-bottom: 4px;">⚠️ Important Notice: There is NO reply inside RAMPED</strong>
+          <span style="color: #78350f; font-size: 12px; line-height: 1.5;">RAMPED does not operate an internal candidate inbox or chat. To respond, reach out directly to the designated company contact using the instructions below.</span>
         </div>
 
         <p style="font-size: 15px; line-height: 1.6; margin-top: 0;">Hi Elena,</p>
-        <p style="font-size: 15px; line-height: 1.6;"><strong>Apex Innovations</strong> has reviewed your verified Stanford Computer Science credentials on RAMP and sent you a direct invitation to explore a key leadership role on our team.</p>
+        <p style="font-size: 15px; line-height: 1.6;"><strong>Apex Innovations</strong> has reviewed your verified Stanford Computer Science credentials on RAMPED and sent you a direct invitation to explore a key leadership role on our team.</p>
 
         <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 20px; margin: 24px 0;">
           <h3 style="margin: 0 0 12px; font-size: 17px; color: #0f172a;">Senior Distributed Systems Engineer</h3>
@@ -1242,14 +1242,14 @@ export const INITIAL_EMAILS: EmailLog[] = [
           <p style="margin: 0 0 6px; font-size: 14px; color: #1e40af;"><strong>Direct Email:</strong> <a href="mailto:sarah.jenkins@apexinnovations.tech" style="color: #2563eb; text-decoration: underline;">sarah.jenkins@apexinnovations.tech</a></p>
           <p style="margin: 0 0 6px; font-size: 14px; color: #1e40af;"><strong>Direct Phone:</strong> +1 (415) 890-4412</p>
           <p style="margin: 0 0 12px; font-size: 14px; color: #1e40af;"><strong>Meeting Scheduling Link:</strong> <a href="https://calendly.com/sarah-jenkins-apex/intro-chat" style="color: #2563eb; text-decoration: underline;">calendly.com/sarah-jenkins-apex/intro-chat</a></p>
-          <p style="margin: 0 0 12px; font-size: 14px; color: #1e40af;"><strong>Candidate Reference Code:</strong> <code style="background: #dbeafe; padding: 2px 6px; border-radius: 4px; font-family: monospace;">RAMP-APX-4412</code></p>
+          <p style="margin: 0 0 12px; font-size: 14px; color: #1e40af;"><strong>Candidate Reference Code:</strong> <code style="background: #dbeafe; padding: 2px 6px; border-radius: 4px; font-family: monospace;">RAMPED-APX-4412</code></p>
           <div style="border-top: 1px solid #bfdbfe; padding-top: 10px; font-size: 13px; color: #1e3a8a; line-height: 1.5;">
-            <strong>Instructions:</strong> Please contact Sarah directly by email or book a call via Calendly quoting reference code RAMP-APX-4412. All interview coordination is managed directly with Apex Innovations.
+            <strong>Instructions:</strong> Please contact Sarah directly by email or book a call via Calendly quoting reference code RAMPED-APX-4412. All interview coordination is managed directly with Apex Innovations.
           </div>
         </div>
 
         <div style="border-top: 1px solid #f1f5f9; padding-top: 20px; font-size: 12px; color: #94a3b8;">
-          Sent securely via RAMP. You received this invite because you are a verified candidate. Candidate profiles remain passive; RAMP does not store messages or replies.
+          Sent securely via RAMPED. You received this invite because you are a verified candidate. Candidate profiles remain passive; RAMPED does not store messages or replies.
         </div>
       </div>
     `,
@@ -1259,18 +1259,18 @@ export const INITIAL_EMAILS: EmailLog[] = [
     toEmail: 'marcus.vance@mit.alum.edu',
     toName: 'Marcus Vance',
     subject: 'Direct Job Invite: Lead AI & Machine Learning Scientist at Vanguard Systems [No In-App Reply]',
-    senderName: 'Michael Thorne (Vanguard Systems via RAMP)',
+    senderName: 'Michael Thorne (Vanguard Systems via RAMPED)',
     sentAt: '2026-09-28T09:15:00Z',
     category: 'job_invite',
     htmlBody: `
       <div style="font-family: sans-serif; max-width: 600px; margin: auto; padding: 24px; border: 1px solid #e2e8f0; border-radius: 8px;">
         <div style="background: #fffbeb; border-left: 4px solid #f59e0b; padding: 12px; margin-bottom: 16px;">
-          <strong style="color: #92400e; font-size: 13px;">⚠️ Note: There is NO reply inside RAMP.</strong>
+          <strong style="color: #92400e; font-size: 13px;">⚠️ Note: There is NO reply inside RAMPED.</strong>
           <p style="margin: 4px 0 0; color: #78350f; font-size: 12px;">Contact the employer representative directly below.</p>
         </div>
         <h2 style="color: #0f172a; margin-top: 0;">Vanguard Systems · Direct Job Invitation</h2>
         <p>Dear Marcus,</p>
-        <p>We found your profile through RAMP's verified credential registry. Your published research and verified MIT degree in Machine Learning align with our expansion.</p>
+        <p>We found your profile through RAMPED's verified credential registry. Your published research and verified MIT degree in Machine Learning align with our expansion.</p>
         <p><strong>Position:</strong> Lead AI & Machine Learning Scientist ($280k - $350k + Bonus)</p>
         
         <div style="background: #f8fafc; padding: 16px; border: 1px solid #e2e8f0; border-radius: 6px; margin: 16px 0;">

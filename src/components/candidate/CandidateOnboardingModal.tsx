@@ -42,17 +42,17 @@ export const CandidateOnboardingModal: React.FC<CandidateOnboardingModalProps> =
   isOpen,
   onClose,
 }) => {
-  const { registerCandidate } = useRamp();
+  const { registerCandidate, authSession, isDemoMode } = useRamp();
 
   const [step, setStep] = useState<1 | 2 | 3 | 4>(1);
   const [name, setName] = useState('');
-  const [email, setEmail] = useState('');
+  const [email, setEmail] = useState(authSession?.user.email || '');
   const [phone, setPhone] = useState('');
-  const [location, setLocation] = useState('San Francisco, CA');
+  const [location, setLocation] = useState('');
   const [currentEmployer, setCurrentEmployer] = useState('');
   const [bio, setBio] = useState('');
   const [aboutMe, setAboutMe] = useState('');
-  const [skills, setSkills] = useState('TypeScript, React, Python, PostgreSQL');
+  const [skills, setSkills] = useState('');
 
   // Categories (Candidate-driven, no AI classification)
   const [selectedCategories, setSelectedCategories] = useState<JobCategory[]>([
@@ -61,13 +61,14 @@ export const CandidateOnboardingModal: React.FC<CandidateOnboardingModalProps> =
 
   // Degree info & Document upload
   const [degreeType, setDegreeType] = useState<DegreeType>("Bachelor's Degree");
-  const [degreeTitle, setDegreeTitle] = useState('Bachelor of Science in Computer Science');
-  const [institution, setInstitution] = useState('University of California, Berkeley');
-  const [graduationYear, setGraduationYear] = useState('2024');
+  const [degreeTitle, setDegreeTitle] = useState('');
+  const [institution, setInstitution] = useState('');
+  const [graduationYear, setGraduationYear] = useState('');
   const [remotePreference, setRemotePreference] = useState<RemotePreference>('remote_only');
   const [yearsOfExperience, setYearsOfExperience] = useState(3);
-  const [documentUrl, setDocumentUrl] = useState<string>(SAMPLE_DIPLOMA_IMAGE);
-  const [fileName, setFileName] = useState('Official_University_Diploma.pdf');
+  const [documentUrl, setDocumentUrl] = useState<string>(isDemoMode ? SAMPLE_DIPLOMA_IMAGE : '');
+  const [fileName, setFileName] = useState(isDemoMode ? 'Official_University_Diploma.pdf' : '');
+  const [credentialUploadError, setCredentialUploadError] = useState<string | null>(null);
 
   // Privacy toggles
   const [showPhone, setShowPhone] = useState(false);
@@ -90,6 +91,7 @@ export const CandidateOnboardingModal: React.FC<CandidateOnboardingModalProps> =
 
   // Synchronous and Immediate Auto-Save to localStorage
   const saveDraftNow = useCallback(() => {
+    if (!isDemoMode) return;
     try {
       const now = new Date();
       const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -148,11 +150,12 @@ export const CandidateOnboardingModal: React.FC<CandidateOnboardingModalProps> =
     showCurrentEmployer,
     showLocation,
     isSnoozed,
+    isDemoMode,
   ]);
 
   // Restore saved draft upon opening
   useEffect(() => {
-    if (isOpen && !hasLoadedDraft) {
+    if (isOpen && !hasLoadedDraft && isDemoMode) {
       try {
         const raw = localStorage.getItem(DRAFT_STORAGE_KEY);
         if (raw) {
@@ -190,12 +193,14 @@ export const CandidateOnboardingModal: React.FC<CandidateOnboardingModalProps> =
         console.warn('Draft restoration error:', err);
       }
       setHasLoadedDraft(true);
+    } else if (isOpen && !hasLoadedDraft) {
+      setHasLoadedDraft(true);
     }
-  }, [isOpen, hasLoadedDraft]);
+  }, [isOpen, hasLoadedDraft, isDemoMode]);
 
   // Real-time debounced auto-save as candidate types
   useEffect(() => {
-    if (!hasLoadedDraft || !isOpen) return;
+    if (!isDemoMode || !hasLoadedDraft || !isOpen) return;
     if (!name && !email && !phone && !currentEmployer && !bio && !aboutMe) return;
 
     const timer = setTimeout(() => {
@@ -229,29 +234,33 @@ export const CandidateOnboardingModal: React.FC<CandidateOnboardingModalProps> =
     hasLoadedDraft,
     isOpen,
     saveDraftNow,
+    isDemoMode,
   ]);
 
   const handleClearDraft = () => {
     localStorage.removeItem(DRAFT_STORAGE_KEY);
     setName('');
-    setEmail('');
+    setEmail(authSession?.user.email || '');
     setPhone('');
-    setLocation('San Francisco, CA');
+    setLocation('');
     setCurrentEmployer('');
     setBio('');
     setAboutMe('');
-    setSkills('TypeScript, React, Python, PostgreSQL');
+    setSkills('');
     setSelectedCategories(['Full-Stack Software Engineer']);
     setDegreeType("Bachelor's Degree");
-    setDegreeTitle('Bachelor of Science in Computer Science');
-    setInstitution('University of California, Berkeley');
-    setGraduationYear('2024');
+    setDegreeTitle('');
+    setInstitution('');
+    setGraduationYear('');
     setRemotePreference('remote_only');
     setYearsOfExperience(3);
     setStep(1);
     setLastSavedTime(null);
     setRestoredFromDraft(false);
     setIsSnoozed(false);
+    setDocumentUrl(isDemoMode ? SAMPLE_DIPLOMA_IMAGE : '');
+    setFileName(isDemoMode ? 'Official_University_Diploma.pdf' : '');
+    setCredentialUploadError(null);
   };
 
   if (!isOpen) return null;
@@ -266,11 +275,25 @@ export const CandidateOnboardingModal: React.FC<CandidateOnboardingModalProps> =
   const handleCustomUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    const allowedTypes = ['application/pdf', 'image/jpeg', 'image/png', 'image/webp'];
+    if (!allowedTypes.includes(file.type)) {
+      setCredentialUploadError('Upload a PDF, JPG, PNG, or WebP credential document.');
+      e.target.value = '';
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      setCredentialUploadError('Credential documents must be 5 MB or smaller.');
+      e.target.value = '';
+      return;
+    }
+    setCredentialUploadError(null);
     setFileName(file.name);
     const reader = new FileReader();
     reader.onload = () => {
-      setDocumentUrl(reader.result as string);
+      if (typeof reader.result === 'string') setDocumentUrl(reader.result);
+      else setCredentialUploadError('Unable to read this credential document.');
     };
+    reader.onerror = () => setCredentialUploadError('Unable to read this credential document.');
     reader.readAsDataURL(file);
   };
 
@@ -298,7 +321,10 @@ export const CandidateOnboardingModal: React.FC<CandidateOnboardingModalProps> =
 
       const res = await fetch('/api/gemini/about-me-helper', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(authSession ? { Authorization: `Bearer ${authSession.access_token}` } : {}),
+        },
         body: JSON.stringify({
           action: 'draft',
           tone: activeTone,
@@ -341,7 +367,10 @@ export const CandidateOnboardingModal: React.FC<CandidateOnboardingModalProps> =
     try {
       const res = await fetch('/api/gemini/about-me-helper', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(authSession ? { Authorization: `Bearer ${authSession.access_token}` } : {}),
+        },
         body: JSON.stringify({
           action: 'polish',
           currentText: aboutMe,
@@ -385,7 +414,10 @@ export const CandidateOnboardingModal: React.FC<CandidateOnboardingModalProps> =
     try {
       const res = await fetch('/api/gemini/about-me-helper', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(authSession ? { Authorization: `Bearer ${authSession.access_token}` } : {}),
+        },
         body: JSON.stringify({
           action: 'evaluate',
           currentText: aboutMe,
@@ -425,6 +457,11 @@ export const CandidateOnboardingModal: React.FC<CandidateOnboardingModalProps> =
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!name || !email || selectedCategories.length === 0) return;
+    if (!isDemoMode && !documentUrl) {
+      setCredentialUploadError('Upload your credential document before submitting for review.');
+      setStep(4);
+      return;
+    }
 
     registerCandidate({
       name,
@@ -450,7 +487,7 @@ export const CandidateOnboardingModal: React.FC<CandidateOnboardingModalProps> =
       skills: skills.split(',').map((s) => s.trim()).filter(Boolean),
       credentialDocumentUrl: documentUrl,
       resumeFileName: `${name.replace(/\s+/g, '_')}_Resume.pdf`,
-      credentialOcrData: {
+      credentialOcrData: isDemoMode ? {
         candidateName: name,
         degreeType,
         institution,
@@ -458,7 +495,7 @@ export const CandidateOnboardingModal: React.FC<CandidateOnboardingModalProps> =
         credentialId: `REG-${Math.floor(100000 + Math.random() * 900000)}`,
         confidenceScore: 98.7,
         extractedFieldsMatch: true,
-      },
+      } : undefined,
     });
 
     localStorage.removeItem(DRAFT_STORAGE_KEY);
@@ -728,7 +765,7 @@ export const CandidateOnboardingModal: React.FC<CandidateOnboardingModalProps> =
                   </span>
                 </div>
                 <p className="text-xs text-neutral-300 leading-relaxed">
-                  In RAMP, employers don't just hire resumes—they hire people. Use this space to share your personal values, collaboration philosophy, intellectual curiosity, and what you love doing when you step away from the keyboard.
+                  In RAMPED, employers don't just hire resumes—they hire people. Use this space to share your personal values, collaboration philosophy, intellectual curiosity, and what you love doing when you step away from the keyboard.
                 </p>
               </div>
 
@@ -1178,7 +1215,9 @@ export const CandidateOnboardingModal: React.FC<CandidateOnboardingModalProps> =
                   <span className="text-xs font-bold text-neutral-300">
                     Mandatory Digital Proof of Degree (PDF/JPEG)
                   </span>
-                  <span className="text-[11px] text-emerald-400 font-mono">OCR Ready</span>
+                  <span className="text-[11px] text-emerald-400 font-mono">
+                    {isDemoMode ? 'Demo Preview' : 'Private · Manual review'}
+                  </span>
                 </div>
 
                 <div className="flex flex-col sm:flex-row items-center gap-3">
@@ -1187,7 +1226,7 @@ export const CandidateOnboardingModal: React.FC<CandidateOnboardingModalProps> =
                     <span>Upload Custom File</span>
                     <input
                       type="file"
-                      accept="image/*,application/pdf"
+                      accept="image/jpeg,image/png,image/webp,application/pdf"
                       className="hidden"
                       onChange={(e) => {
                         handleCustomUpload(e);
@@ -1196,7 +1235,7 @@ export const CandidateOnboardingModal: React.FC<CandidateOnboardingModalProps> =
                     />
                   </label>
 
-                  <button
+                  {isDemoMode && <button
                     type="button"
                     onClick={() => {
                       setDocumentUrl(SAMPLE_DIPLOMA_IMAGE);
@@ -1206,13 +1245,21 @@ export const CandidateOnboardingModal: React.FC<CandidateOnboardingModalProps> =
                     className="px-3 py-2 rounded-lg bg-neutral-900 border border-neutral-800 text-neutral-300 text-xs hover:border-neutral-700"
                   >
                     Use Verified Sample Diploma
-                  </button>
+                  </button>}
                 </div>
 
                 <div className="text-[11px] text-neutral-400 font-mono flex items-center gap-2">
                   <CheckCircle className="w-3.5 h-3.5 text-emerald-400" />
-                  <span>Selected: {fileName}</span>
+                  <span>Selected: {fileName || 'No credential uploaded'}</span>
                 </div>
+                {credentialUploadError && (
+                  <p role="alert" className="text-xs text-red-300">{credentialUploadError}</p>
+                )}
+                {!isDemoMode && (
+                  <p className="text-[11px] leading-5 text-neutral-500">
+                    Your document is stored with your private account and reviewed by an administrator. RAMPED does not automatically verify credentials.
+                  </p>
+                )}
               </div>
 
               <div className="flex items-center justify-between pt-2">

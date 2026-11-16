@@ -66,6 +66,7 @@ function shuffleArray<T>(array: T[]): T[] {
 export const EmployerSearchPortal: React.FC = () => {
   const {
     currentEmployer,
+    authSession,
     candidates,
     jobInvites,
     selectedCandidateForInvite,
@@ -93,12 +94,16 @@ export const EmployerSearchPortal: React.FC = () => {
   const [geminiCriteria, setGeminiCriteria] = useState<any>(null);
 
   // Modals & Advanced Tier 2 Workflows
-  const [isStripeModalOpen, setIsStripeModalOpen] = useState(false);
+  const [isStripeModalOpen, setIsStripeModalOpen] = useState(() =>
+    new URLSearchParams(window.location.search).has('billing')
+  );
   const [defaultStripeTier, setDefaultStripeTier] = useState<SubscriptionTier | undefined>(undefined);
   const [previewResumeCandidate, setPreviewResumeCandidate] = useState<CandidateProfile | null>(null);
   const [previewDegreeCandidate, setPreviewDegreeCandidate] = useState<CandidateProfile | null>(null);
   const [previewAboutMeCandidate, setPreviewAboutMeCandidate] = useState<CandidateProfile | null>(null);
-  const [viewMode, setViewMode] = useState<'candidates' | 'sent_invites' | 'billing'>('candidates');
+  const [viewMode, setViewMode] = useState<'candidates' | 'sent_invites' | 'billing'>(
+    currentEmployer?.subscriptionTier === 'none' ? 'billing' : 'candidates'
+  );
 
   // Tier 2 Differentiators: Candidate Comparison Matrix, Instant Scheduling, and Capabilities Matrix
   const [selectedForComparison, setSelectedForComparison] = useState<string[]>([]);
@@ -113,7 +118,14 @@ export const EmployerSearchPortal: React.FC = () => {
   }
 
   const isTier2 = currentEmployer.subscriptionTier === 'tier2';
-  const monthlyInvitesUsed = currentEmployer.monthlyInvitesSent || 4;
+  const hasActiveSubscription =
+    currentEmployer.subscriptionTier === 'tier1' || currentEmployer.subscriptionTier === 'tier2';
+  const monthStart = new Date();
+  monthStart.setUTCDate(1);
+  monthStart.setUTCHours(0, 0, 0, 0);
+  const monthlyInvitesUsed = jobInvites.filter(
+    (invite) => Date.parse(invite.sentAt) >= monthStart.getTime()
+  ).length;
   const tier1Quota = 25;
 
   // Handle Gemini Natural Language Search (directly brings up results, no recruiter briefing card)
@@ -131,7 +143,10 @@ export const EmployerSearchPortal: React.FC = () => {
     try {
       const res = await fetch('/api/gemini/employer-search', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(authSession ? { Authorization: `Bearer ${authSession.access_token}` } : {}),
+        },
         body: JSON.stringify({
           prompt: query,
           candidates,
@@ -375,7 +390,8 @@ export const EmployerSearchPortal: React.FC = () => {
         <div className="flex items-center gap-1">
           <button
             onClick={() => setViewMode('candidates')}
-            className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-colors ${
+            disabled={!hasActiveSubscription}
+            className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
               viewMode === 'candidates'
                 ? 'bg-neutral-800 text-white'
                 : 'text-neutral-400 hover:text-white'
@@ -479,21 +495,23 @@ export const EmployerSearchPortal: React.FC = () => {
                 </div>
                 <h3 className="text-xl font-bold text-white tracking-tight mt-0.5 flex items-center gap-2">
                   <span>
-                    {isTier2
+                    {!hasActiveSubscription
+                      ? 'Choose a plan to activate candidate search'
+                      : isTier2
                       ? 'Tier 2 Enterprise Suite · Real-Time Alerts & Unlimited Reach'
                       : 'Tier 1 Standard · Verified Candidate Search (25 Invites/mo)'}
                   </span>
                 </h3>
                 <div className="text-xs text-neutral-400 font-mono mt-1">
-                  Billed {currentEmployer.subscriptionCadence} · Next renewal:{' '}
-                  {currentEmployer.subscriptionActiveUntil
+                  {hasActiveSubscription ? `Billed ${currentEmployer.subscriptionCadence || 'subscription'} · Next renewal: ` : 'Billing status: '}
+                  {hasActiveSubscription && currentEmployer.subscriptionActiveUntil
                     ? new Date(currentEmployer.subscriptionActiveUntil).toLocaleDateString()
-                    : 'Annual'}
+                    : hasActiveSubscription ? 'Not available' : 'No active subscription'}
                 </div>
               </div>
 
               <div className="flex items-center gap-2.5">
-                {!isTier2 && (
+                {hasActiveSubscription && !isTier2 && (
                   <button
                     onClick={() => {
                       setDefaultStripeTier('tier2');
@@ -513,7 +531,7 @@ export const EmployerSearchPortal: React.FC = () => {
                   className="px-4 py-2 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-neutral-200 border border-neutral-700 text-xs font-semibold transition-colors flex items-center gap-1.5"
                 >
                   <CreditCard className="w-3.5 h-3.5" />
-                  Stripe Checkout Flow
+                  {hasActiveSubscription ? 'Manage Stripe Billing' : 'Choose a plan'}
                 </button>
               </div>
             </div>
@@ -543,51 +561,24 @@ export const EmployerSearchPortal: React.FC = () => {
             </div>
           </div>
 
-          {/* Stripe Invoices & Receipts History */}
+          {/* Stripe Billing Portal */}
           <div className="p-6 bg-neutral-900 border border-neutral-800 rounded-2xl space-y-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <h4 className="text-sm font-bold text-white">Stripe Invoices & Receipts</h4>
-                <p className="text-xs text-neutral-400">
-                  Itemized records of all transactions processed via Stripe gateway.
-                </p>
-              </div>
-              <span className="text-xs font-mono text-neutral-500">
-                {currentEmployer.invoices?.length || 0} Invoices on Record
-              </span>
+            <div>
+              <h4 className="text-sm font-bold text-white">Receipts, payment methods & cancellation</h4>
+              <p className="mt-1 text-xs text-neutral-400">
+                Open the secure Stripe customer portal to view invoices or manage your recurring plan.
+              </p>
             </div>
-
-            {!currentEmployer.invoices || currentEmployer.invoices.length === 0 ? (
-              <div className="p-8 text-center text-xs text-neutral-500 border border-neutral-800 rounded-xl bg-neutral-950/40">
-                No past invoices found. Use the Stripe Checkout Flow above to generate a new subscription invoice.
-              </div>
-            ) : (
-              <div className="divide-y divide-neutral-800 text-xs font-mono">
-                {currentEmployer.invoices.map((inv) => (
-                  <div
-                    key={inv.id}
-                    className="py-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
-                  >
-                    <div>
-                      <div className="font-bold text-white flex items-center gap-2">
-                        <span>{inv.invoiceNumber}</span>
-                        <span className="text-[10px] px-2 py-0.5 rounded bg-emerald-950 text-emerald-400 border border-emerald-900">
-                          {inv.status.toUpperCase()}
-                        </span>
-                      </div>
-                      <div className="text-neutral-400 text-[11px] mt-0.5">
-                        {inv.planName} · Paid via {inv.paymentMethod.brand} ···· {inv.paymentMethod.last4}
-                      </div>
-                    </div>
-
-                    <div className="text-right">
-                      <div className="text-white font-bold">${inv.totalAmount.toFixed(2)} USD</div>
-                      <div className="text-neutral-500 text-[11px]">{new Date(inv.date).toLocaleDateString()}</div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
+            <button
+              type="button"
+              onClick={() => {
+                setDefaultStripeTier(currentEmployer.subscriptionTier);
+                setIsStripeModalOpen(true);
+              }}
+              className="rounded-xl bg-neutral-800 px-4 py-2 text-xs font-semibold text-white transition-colors hover:bg-neutral-700"
+            >
+              Open Stripe billing
+            </button>
           </div>
         </div>
       ) : (
@@ -1351,7 +1342,7 @@ export const EmployerSearchPortal: React.FC = () => {
                   </div>
                   <div>
                     <span className="text-neutral-500 block">Verification Authority:</span>
-                    <span className="text-emerald-400">RAMP Cryptographic Audit Service</span>
+                    <span className="text-emerald-400">RAMPED Cryptographic Audit Service</span>
                   </div>
                 </div>
               </div>

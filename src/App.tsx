@@ -1,14 +1,11 @@
-import React, { useState } from 'react';
+import React, { lazy, Suspense, useEffect, useState } from 'react';
 import { RampProvider, useRamp } from './context/RampContext';
 import { Navbar } from './components/layout/Navbar';
-import { CandidateDashboard } from './components/candidate/CandidateDashboard';
 import { CandidateOnboardingModal } from './components/candidate/CandidateOnboardingModal';
-import { EmployerSearchPortal } from './components/employer/EmployerSearchPortal';
-import { AdminPortal } from './components/admin/AdminPortal';
-import { LifecycleTimeMachine } from './components/common/LifecycleTimeMachine';
 import { EmailViewerModal } from './components/common/EmailViewerModal';
 import { NotificationDrawer } from './components/common/NotificationDrawer';
 import { EmailListDrawer } from './components/common/EmailListDrawer';
+import { MarketplaceAccess } from './components/auth/MarketplaceAccess';
 import {
   Smartphone,
   ShieldCheck,
@@ -21,12 +18,36 @@ import {
   UserCheck,
 } from 'lucide-react';
 
+const CandidateDashboard = lazy(() =>
+  import('./components/candidate/CandidateDashboard').then((module) => ({
+    default: module.CandidateDashboard,
+  }))
+);
+const EmployerSearchPortal = lazy(() =>
+  import('./components/employer/EmployerSearchPortal').then((module) => ({
+    default: module.EmployerSearchPortal,
+  }))
+);
+const AdminPortal = lazy(() =>
+  import('./components/admin/AdminPortal').then((module) => ({
+    default: module.AdminPortal,
+  }))
+);
+const LifecycleTimeMachine = lazy(() =>
+  import('./components/common/LifecycleTimeMachine').then((module) => ({
+    default: module.LifecycleTimeMachine,
+  }))
+);
+
 const AppContent: React.FC = () => {
   const {
     currentRole,
     setCurrentRole,
     mobilePreviewMode,
     setMobilePreviewMode,
+    isDemoMode,
+    marketplaceError,
+    clearMarketplaceError,
   } = useRamp();
 
   const [activeTab, setActiveTab] = useState<'search' | 'candidate' | 'admin' | 'lifecycle' | 'onboarding'>('search');
@@ -34,8 +55,20 @@ const AppContent: React.FC = () => {
   const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
   const [isEmailsOpen, setIsEmailsOpen] = useState(false);
 
+  useEffect(() => {
+    if (isDemoMode) return;
+    setActiveTab(currentRole === 'candidate' ? 'candidate' : currentRole === 'admin' ? 'admin' : 'search');
+  }, [currentRole, isDemoMode]);
+
   return (
+    <MarketplaceAccess>
     <div className="min-h-screen bg-neutral-950 text-neutral-100 flex flex-col font-sans selection:bg-amber-500/20 selection:text-amber-200">
+      {!isDemoMode && marketplaceError && (
+        <div role="alert" className="mx-auto mt-3 flex w-full max-w-7xl items-center justify-between gap-3 rounded-lg border border-red-900 bg-red-950/50 px-4 py-3 text-sm text-red-200">
+          <span>{marketplaceError}</span>
+          <button type="button" onClick={clearMarketplaceError} className="text-xs underline">Dismiss</button>
+        </div>
+      )}
       {/* Top Navbar */}
       <Navbar
         activeTab={activeTab}
@@ -77,6 +110,7 @@ const AppContent: React.FC = () => {
 
       {/* Main Viewport Container */}
       <main className="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 lg:p-8">
+        <Suspense fallback={<div role="status" className="py-12 text-center text-neutral-400">Loading view...</div>}>
         {mobilePreviewMode ? (
           /* Mobile Device Frame Simulator */
           <div className="flex flex-col items-center justify-center my-4">
@@ -114,6 +148,7 @@ const AppContent: React.FC = () => {
             {activeTab === 'lifecycle' && <LifecycleTimeMachine />}
           </div>
         )}
+        </Suspense>
       </main>
 
       {/* Drawers & Modals */}
@@ -138,7 +173,7 @@ const AppContent: React.FC = () => {
       <footer className="border-t border-neutral-800 bg-neutral-950 py-6 px-4 text-center text-xs text-neutral-400 font-mono">
         <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-3">
           <div>
-            RAMP · Recruiter & Applicant Matching Platform · Reversing the traditional job board
+            RAMPED · Recruiter & Applicant Matching Platform for Employment and Discovery · Reversing the traditional job board
           </div>
           <div className="flex items-center gap-4 text-neutral-400">
             <span>Candidate Free Access</span>
@@ -150,6 +185,7 @@ const AppContent: React.FC = () => {
         </div>
       </footer>
     </div>
+    </MarketplaceAccess>
   );
 };
 

@@ -89,7 +89,7 @@ export const NotificationDrawer: React.FC<NotificationDrawerProps> = ({ isOpen, 
           {/* Footer */}
           <div className="p-4 border-t border-neutral-800 bg-neutral-950 text-center">
             <span className="text-[11px] text-neutral-500 font-mono">
-              RAMP Push Event Channel · Instant In-App Dispatch
+              RAMPED Push Event Channel · Instant In-App Dispatch
             </span>
           </div>
         </div>

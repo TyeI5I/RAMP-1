@@ -58,7 +58,7 @@ export const LifecycleTimeMachine: React.FC = () => {
           Test Candidate Activity Decay & Automated Retention Warnings
         </h2>
         <p className="text-xs text-neutral-400 max-w-3xl leading-relaxed">
-          RAMP completely eliminates stale "ghost profiles" on traditional job boards. Passive candidates must check in every 14 days or they are automatically removed from employer search pools. If inactive for 30 days, accounts are permanently expunged.
+          RAMPED completely eliminates stale "ghost profiles" on traditional job boards. Passive candidates must check in every 14 days or they are automatically removed from employer search pools. If inactive for 30 days, accounts are permanently expunged.
         </p>
       </div>
 

@@ -1,34 +1,14 @@
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useRamp } from '../../context/RampContext';
 import {
-  SubscriptionTier,
   BillingCadence,
   JobCategory,
   JOB_CATEGORIES,
-  InvoiceRecord,
-  TIER_DIFFERENTIATORS,
+  SubscriptionTier,
 } from '../../types/ramp';
-import {
-  X,
-  Check,
-  CreditCard,
-  Shield,
-  Zap,
-  Bell,
-  CheckCircle,
-  Building,
-  Lock,
-  ArrowRight,
-  Download,
-  Mail,
-  AlertCircle,
-  HelpCircle,
-  ExternalLink,
-  ChevronRight,
-  RefreshCw,
-  Landmark,
-  FileText,
-} from 'lucide-react';
+import type { Session } from '@supabase/supabase-js';
+import { supabase } from '../../lib/supabase';
+import { AlertCircle, Check, ExternalLink, Lock, X } from 'lucide-react';
 
 interface StripeSubscriptionModalProps {
   isOpen: boolean;
@@ -36,1295 +16,655 @@ interface StripeSubscriptionModalProps {
   defaultTier?: SubscriptionTier;
 }
 
+function isJobCategory(value: unknown): value is JobCategory {
+  return JOB_CATEGORIES.some((category) => category === value);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
 export const StripeSubscriptionModal: React.FC<StripeSubscriptionModalProps> = ({
   isOpen,
   onClose,
   defaultTier,
 }) => {
-  const { currentEmployer, upgradeSubscription, setSelectedEmailModal, emailLogs } = useRamp();
-
-  // Workflow Step: 1 = Plan Selection, 2 = Billing Details, 3 = Payment Processing, 4 = Confirmation/Receipt
-  const [step, setStep] = useState<1 | 2 | 3 | 4>(1);
-
-  // Plan configuration
-  const [selectedTier, setSelectedTier] = useState<SubscriptionTier>(
-    defaultTier ||
-      (currentEmployer?.subscriptionTier && currentEmployer.subscriptionTier !== 'none'
-        ? currentEmployer.subscriptionTier
-        : 'tier2')
+  const { currentEmployer, activateSubscription, deactivateSubscription } = useRamp();
+  const [authSession, setAuthSession] = useState<Session | null>(null);
+  const [isAuthReady, setIsAuthReady] = useState(false);
+  const [authMode, setAuthMode] = useState<'sign-in' | 'sign-up'>('sign-in');
+  const [authEmail, setAuthEmail] = useState(currentEmployer?.email || '');
+  const [password, setPassword] = useState('');
+  const [companyName, setCompanyName] = useState(currentEmployer?.companyName || '');
+  const [hasStripeCustomer, setHasStripeCustomer] = useState(false);
+  const [tier, setTier] = useState<Exclude<SubscriptionTier, 'none'>>(
+    defaultTier === 'tier1' ? 'tier1' : 'tier2'
   );
-  const [cadence, setCadence] = useState<BillingCadence>(
-    currentEmployer?.subscriptionCadence || 'annual'
-  );
-  const [recruiterSeats, setRecruiterSeats] = useState<number>(1);
-  const [alertCategories, setAlertCategories] = useState<JobCategory[]>(
-    currentEmployer?.instantAlertCategories || ['Full-Stack Software Engineer', 'Data Scientist & ML Engineer']
-  );
-
-  // Billing Details
-  const [companyName, setCompanyName] = useState(currentEmployer?.companyName || 'Apex Innovations');
-  const [taxId, setTaxId] = useState(currentEmployer?.taxId || 'EIN: 84-3991204');
-  const [billingEmail, setBillingEmail] = useState(currentEmployer?.email || 'billing@apexinnovations.tech');
-  const [billingAddress, setBillingAddress] = useState('100 Montgomery St, Suite 1400');
-  const [city, setCity] = useState('San Francisco');
-  const [postalCode, setPostalCode] = useState('94104');
-  const [country, setCountry] = useState('United States');
-
-  // Payment method state
-  const [paymentMethodType, setPaymentMethodType] = useState<'card' | 'ach' | 'link'>('card');
-  const [cardNumber, setCardNumber] = useState('4242 4242 4242 4242');
-  const [cardExpiry, setCardExpiry] = useState('12/28');
-  const [cardCvc, setCardCvc] = useState('381');
-  const [cardholderName, setCardholderName] = useState(currentEmployer?.recruiterName || 'Sarah Jenkins');
-  const [bankRouting, setBankRouting] = useState('111000025');
-  const [bankAccount, setBankAccount] = useState('000123456789');
-
-  // Stripe processing simulation state
-  const [isProcessing, setIsProcessing] = useState(false);
-  const [processingStage, setProcessingStage] = useState<string>('');
-  const [processingProgress, setProcessingProgress] = useState<number>(0);
+  const [cadence, setCadence] = useState<BillingCadence>('annual');
+  const [email, setEmail] = useState(currentEmployer?.email || '');
+  const [alertCategories, setAlertCategories] = useState<JobCategory[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-
-  // 3D Secure modal simulation
-  const [is3DSModalOpen, setIs3DSModalOpen] = useState(false);
-  const [otpCode, setOtpCode] = useState('');
-
-  // Generated receipt invoice record
-  const [generatedInvoice, setGeneratedInvoice] = useState<InvoiceRecord | null>(null);
-
-  // Pricing math
-  const isTier2 = selectedTier === 'tier2';
-  const baseMonthly = isTier2 ? 599 : 299;
-  const baseAnnual = isTier2 ? 5990 : 2990;
-  const basePrice = cadence === 'monthly' ? baseMonthly : baseAnnual;
-  const extraSeatPrice = recruiterSeats > 1 ? (recruiterSeats - 1) * (cadence === 'monthly' ? 99 : 990) : 0;
-  const subtotal = basePrice + extraSeatPrice;
-  const taxRate = 0.0825; // 8.25% State & Local sales tax
-  const taxAmount = Math.round(subtotal * taxRate * 100) / 100;
-  const totalAmount = subtotal + taxAmount;
-  const annualSavings = isTier2 ? 599 * 12 - 5990 : 299 * 12 - 2990;
+  const [billingStatus, setBillingStatus] = useState<'idle' | 'active' | 'cancelled'>('idle');
 
   useEffect(() => {
-    if (defaultTier) {
-      setSelectedTier(defaultTier);
+    if (!supabase) {
+      setIsAuthReady(true);
+      return;
     }
+
+    let mounted = true;
+    void supabase.auth.getSession().then(({ data, error }) => {
+      if (!mounted) return;
+      if (error) setErrorMessage(error.message);
+      setAuthSession(data.session);
+      setIsAuthReady(true);
+    });
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      setAuthSession(session);
+      setIsAuthReady(true);
+      if (session?.user.email) {
+        setAuthEmail(session.user.email);
+        setEmail(session.user.email);
+      } else {
+        setHasStripeCustomer(false);
+        setBillingStatus('idle');
+        deactivateSubscription();
+      }
+    });
+
+    return () => {
+      mounted = false;
+      subscription.unsubscribe();
+    };
+  }, [deactivateSubscription]);
+
+  useEffect(() => {
+    if (defaultTier === 'tier1' || defaultTier === 'tier2') setTier(defaultTier);
   }, [defaultTier]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    setEmail(currentEmployer?.email || '');
+    setCompanyName(currentEmployer?.companyName || '');
+    setErrorMessage(null);
+    if (!new URLSearchParams(window.location.search).has('billing')) {
+      setBillingStatus('idle');
+    }
+  }, [isOpen, currentEmployer?.id, currentEmployer?.email]);
+
+  useEffect(() => {
+    if (!isOpen || !isAuthReady || !authSession) return;
+    let cancelled = false;
+    const loadBillingAccount = async () => {
+      try {
+        const response = await fetch('/api/billing/account', {
+          headers: { Authorization: `Bearer ${authSession.access_token}` },
+        });
+        const payload: unknown = await response.json();
+        if (!response.ok) {
+          throw new Error(
+            isRecord(payload) && typeof payload.error === 'string'
+              ? payload.error
+              : 'Unable to load billing details.'
+          );
+        }
+        if (!isRecord(payload) || !isRecord(payload.account)) {
+          setHasStripeCustomer(false);
+          setBillingStatus('idle');
+          deactivateSubscription();
+          return;
+        }
+        const account = payload.account;
+        setHasStripeCustomer(typeof account.stripe_customer_id === 'string');
+        if (
+          account.subscription_status !== 'active' &&
+          account.subscription_status !== 'trialing'
+        ) {
+          deactivateSubscription();
+          return;
+        }
+        if (
+          (account.subscription_tier !== 'tier1' && account.subscription_tier !== 'tier2') ||
+          (account.subscription_cadence !== 'monthly' &&
+            account.subscription_cadence !== 'annual') ||
+          typeof account.current_period_end !== 'string' ||
+          typeof account.stripe_customer_id !== 'string' ||
+          typeof account.stripe_subscription_id !== 'string'
+        ) {
+          deactivateSubscription();
+          return;
+        }
+        const categories = Array.isArray(account.alert_categories)
+          ? account.alert_categories.filter(isJobCategory)
+          : [];
+        if (!cancelled) {
+          setTier(account.subscription_tier);
+          setCadence(account.subscription_cadence);
+          activateSubscription(
+            account.subscription_tier,
+            account.subscription_cadence,
+            account.current_period_end,
+            account.stripe_customer_id,
+            account.stripe_subscription_id,
+            categories
+          );
+          setBillingStatus('active');
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setErrorMessage(error instanceof Error ? error.message : 'Unable to load billing details.');
+        }
+      }
+    };
+    void loadBillingAccount();
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen, isAuthReady, authSession?.access_token, currentEmployer?.id, deactivateSubscription]);
+
+  useEffect(() => {
+    if (!isOpen || !isAuthReady) return;
+
+    const url = new URL(window.location.href);
+    const result = url.searchParams.get('billing');
+    const sessionId = url.searchParams.get('session_id');
+    if (result === 'cancelled') {
+      setBillingStatus('cancelled');
+      url.searchParams.delete('billing');
+      window.history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`);
+      return;
+    }
+    if (result === 'manage') {
+      url.searchParams.delete('billing');
+      window.history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`);
+      return;
+    }
+    if (result !== 'success' || !sessionId) return;
+    if (!authSession) {
+      setErrorMessage('Sign in to the employer account that started checkout to verify payment.');
+      return;
+    }
+
+    url.searchParams.delete('billing');
+    url.searchParams.delete('session_id');
+    window.history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`);
+
+    let cancelled = false;
+    const verifyCheckout = async () => {
+      setIsLoading(true);
+      setErrorMessage(null);
+      try {
+        const response = await fetch(
+          `/api/billing/verify-session?session_id=${encodeURIComponent(sessionId)}`,
+          { headers: { Authorization: `Bearer ${authSession.access_token}` } }
+        );
+        const payload: unknown = await response.json();
+        if (!response.ok) {
+          throw new Error(
+            isRecord(payload) && typeof payload.error === 'string'
+              ? payload.error
+              : 'Unable to verify your checkout.'
+          );
+        }
+        if (
+          !isRecord(payload) ||
+          payload.userId !== authSession.user.id ||
+          (payload.tier !== 'tier1' && payload.tier !== 'tier2') ||
+          (payload.cadence !== 'monthly' && payload.cadence !== 'annual') ||
+          typeof payload.subscriptionActiveUntil !== 'string' ||
+          typeof payload.stripeCustomerId !== 'string' ||
+          typeof payload.stripeSubscriptionId !== 'string'
+        ) {
+          throw new Error('Checkout could not be matched to the current employer.');
+        }
+
+        const categories = Array.isArray(payload.alertCategories)
+          ? payload.alertCategories.filter(isJobCategory)
+          : [];
+        if (!cancelled) {
+          setTier(payload.tier);
+          setCadence(payload.cadence);
+          activateSubscription(
+            payload.tier,
+            payload.cadence,
+            payload.subscriptionActiveUntil,
+            payload.stripeCustomerId,
+            payload.stripeSubscriptionId,
+            categories
+          );
+          setBillingStatus('active');
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setErrorMessage(error instanceof Error ? error.message : 'Unable to verify your checkout.');
+        }
+      } finally {
+        if (!cancelled) setIsLoading(false);
+      }
+    };
+
+    void verifyCheckout();
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen, isAuthReady, authSession?.access_token, currentEmployer?.id]);
 
   if (!isOpen) return null;
 
-  // Detect card brand
-  const getCardBrand = (number: string) => {
-    const clean = number.replace(/\s+/g, '');
-    if (clean.startsWith('4')) return 'Visa';
-    if (clean.startsWith('5')) return 'Mastercard';
-    if (clean.startsWith('3')) return 'Amex';
-    return 'Card';
+  const prices: Record<Exclude<SubscriptionTier, 'none'>, Record<BillingCadence, number>> = {
+    tier1: { monthly: 299, annual: 2990 },
+    tier2: { monthly: 599, annual: 5990 },
   };
+  const price = prices[tier][cadence];
 
-  // Quick preset test cards
-  const applyTestCard = (type: 'success' | '3ds' | 'decline' | 'insufficient') => {
+  const startCheckout = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!authSession) {
+      setErrorMessage('Sign in to your employer account before starting checkout.');
+      return;
+    }
+    if (!companyName.trim()) {
+      setErrorMessage('Enter your company name before starting checkout.');
+      return;
+    }
+
+    setIsLoading(true);
     setErrorMessage(null);
-    if (type === 'success') {
-      setCardNumber('4242 4242 4242 4242');
-      setCardExpiry('12/28');
-      setCardCvc('381');
-    } else if (type === '3ds') {
-      setCardNumber('4000 0000 0000 0005');
-      setCardExpiry('12/28');
-      setCardCvc('381');
-    } else if (type === 'decline') {
-      setCardNumber('4000 0000 0000 0002');
-      setCardExpiry('12/28');
-      setCardCvc('381');
-    } else if (type === 'insufficient') {
-      setCardNumber('4000 0000 0000 0127');
-      setCardExpiry('12/28');
-      setCardCvc('381');
+    try {
+      const response = await fetch('/api/billing/checkout-session', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authSession.access_token}`,
+        },
+        body: JSON.stringify({
+          companyName,
+          tier,
+          cadence,
+          alertCategories: tier === 'tier2' ? alertCategories : [],
+        }),
+      });
+      const payload: unknown = await response.json();
+      if (!response.ok) {
+        throw new Error(
+          isRecord(payload) && typeof payload.error === 'string'
+            ? payload.error
+            : 'Unable to start checkout.'
+        );
+      }
+      if (!isRecord(payload) || typeof payload.url !== 'string') {
+        throw new Error('Stripe did not return a checkout URL.');
+      }
+      window.location.assign(payload.url);
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : 'Unable to start checkout.');
+      setIsLoading(false);
     }
   };
 
-  const toggleAlertCategory = (cat: JobCategory) => {
-    setAlertCategories((prev) =>
-      prev.includes(cat) ? prev.filter((c) => c !== cat) : [...prev, cat]
-    );
-  };
-
-  // Handle Stripe Payment Submit
-  const handlePaymentSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const submitAuth = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!supabase) {
+      setErrorMessage('Supabase authentication is not configured.');
+      return;
+    }
+    setIsLoading(true);
     setErrorMessage(null);
-    setIsProcessing(true);
-    setProcessingProgress(15);
-    setProcessingStage('Tokenizing payment credentials with Stripe.js...');
-
-    await new Promise((r) => setTimeout(r, 600));
-    setProcessingProgress(40);
-    setProcessingStage('Creating Stripe PaymentIntent (pi_3P...)...');
-
-    await new Promise((r) => setTimeout(r, 600));
-    setProcessingProgress(65);
-    setProcessingStage('Running Stripe Radar Fraud & Risk Analysis (Risk: Normal)...');
-
-    // Test Card Logic check
-    const cleanCard = cardNumber.replace(/\s+/g, '');
-
-    // Card Decline Test
-    if (cleanCard.endsWith('0002')) {
-      setIsProcessing(false);
-      setErrorMessage(
-        'Your card was declined by the issuer (Code: generic_decline). Please use an alternate card.'
-      );
-      return;
+    try {
+      const result =
+        authMode === 'sign-up'
+          ? await supabase.auth.signUp({
+              email: authEmail,
+              password,
+              options: { data: { company_name: companyName.trim() } },
+            })
+          : await supabase.auth.signInWithPassword({ email: authEmail, password });
+      if (result.error) throw result.error;
+      if (!result.data.session) {
+        setErrorMessage('Check your email to confirm your account, then sign in.');
+      } else {
+        setAuthSession(result.data.session);
+        setEmail(result.data.session.user.email || authEmail);
+      }
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : 'Unable to authenticate.');
+    } finally {
+      setIsLoading(false);
     }
-
-    // Insufficient Funds Test
-    if (cleanCard.endsWith('0127')) {
-      setIsProcessing(false);
-      setErrorMessage(
-        'Card decline: Insufficient corporate credit limit (Code: insufficient_funds).'
-      );
-      return;
-    }
-
-    // 3D Secure Challenge Test
-    if (cleanCard.endsWith('0005')) {
-      setIsProcessing(false);
-      setIs3DSModalOpen(true);
-      return;
-    }
-
-    // Normal Success Flow
-    await completeSuccessfulPayment();
   };
 
-  const completeSuccessfulPayment = async () => {
-    setIsProcessing(true);
-    setProcessingProgress(85);
-    setProcessingStage('Creating recurring Stripe subscription object (sub_1N...)...');
+  const openBillingPortal = async () => {
+    if (!authSession) return;
+    setIsLoading(true);
+    setErrorMessage(null);
+    try {
+      const response = await fetch('/api/billing/portal-session', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${authSession.access_token}` },
+      });
+      const payload: unknown = await response.json();
+      if (!response.ok) {
+        throw new Error(
+          isRecord(payload) && typeof payload.error === 'string'
+            ? payload.error
+            : 'Unable to open billing management.'
+        );
+      }
+      if (!isRecord(payload) || typeof payload.url !== 'string') {
+        throw new Error('Stripe did not return a billing portal URL.');
+      }
+      window.location.assign(payload.url);
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : 'Unable to open billing management.');
+      setIsLoading(false);
+    }
+  };
 
-    await new Promise((r) => setTimeout(r, 500));
-    setProcessingProgress(100);
-    setProcessingStage('Subscription confirmed. Dispatching tax invoice receipt...');
-
-    const brand = getCardBrand(cardNumber);
-    const last4 = cardNumber.replace(/\s+/g, '').slice(-4) || '4242';
-
-    const invoice = upgradeSubscription(
-      selectedTier,
-      cadence,
-      {
-        paymentMethod: {
-          brand,
-          last4,
-          expMonth: parseInt(cardExpiry.split('/')[0]) || 12,
-          expYear: parseInt(cardExpiry.split('/')[1]) ? 2000 + parseInt(cardExpiry.split('/')[1]) : 2028,
-        },
-        billingAddress: {
-          name: cardholderName,
-          line1: billingAddress,
-          city,
-          postalCode,
-          country,
-          taxId,
-        },
-      },
-      alertCategories
+  const toggleAlertCategory = (category: JobCategory) => {
+    setAlertCategories((selected) =>
+      selected.includes(category)
+        ? selected.filter((item) => item !== category)
+        : [...selected, category]
     );
-
-    setGeneratedInvoice(invoice);
-    setIsProcessing(false);
-    setStep(4); // Move to Confirmation/Receipt
-  };
-
-  const handle3DSSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!otpCode) return;
-    setIs3DSModalOpen(false);
-    await completeSuccessfulPayment();
-  };
-
-  const handleDownloadInvoice = () => {
-    if (!generatedInvoice) return;
-    const invoiceContent = `
-============================================================
-              RAMP PLATFORM TAX INVOICE
-============================================================
-Invoice Number: ${generatedInvoice.invoiceNumber}
-Date Conferred: ${new Date(generatedInvoice.date).toLocaleDateString()}
-Status: PAID (Processed via Stripe Gateway)
-
-BILL TO:
-${companyName}
-Attn: ${cardholderName}
-${billingAddress}, ${city}, ${postalCode}
-${country}
-Tax ID / EIN: ${taxId}
-
-SUBSCRIPTION LINE ITEMS:
-1. ${generatedInvoice.planName} (${cadence.toUpperCase()})
-   Amount: $${subtotal.toFixed(2)}
-2. Recruiter Seats: ${recruiterSeats}
-3. Estimated Sales Tax / VAT (8.25%): $${taxAmount.toFixed(2)}
-------------------------------------------------------------
-TOTAL CHARGED: $${totalAmount.toFixed(2)} USD
-------------------------------------------------------------
-
-STRIPE PAYMENT METADATA:
-Payment Intent: ${generatedInvoice.stripePaymentIntentId}
-Subscription ID: ${generatedInvoice.stripeSubscriptionId}
-Customer ID: ${generatedInvoice.stripeCustomerId}
-Payment Method: ${generatedInvoice.paymentMethod.brand} ending in ${generatedInvoice.paymentMethod.last4}
-
-RAMP Technologies Inc.
-100 Montgomery St, Suite 1400, San Francisco, CA
-============================================================
-    `;
-
-    const blob = new Blob([invoiceContent], { type: 'text/plain' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${generatedInvoice.invoiceNumber}.txt`;
-    a.click();
-    URL.revokeObjectURL(url);
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-neutral-950/85 backdrop-blur-sm overflow-y-auto">
-      <div className="relative w-full max-w-4xl bg-neutral-900 border border-neutral-800 rounded-2xl shadow-2xl overflow-hidden my-6 flex flex-col">
-        {/* Stripe Checkout Top Navigation Bar */}
-        <div className="flex items-center justify-between p-5 border-b border-neutral-800 bg-neutral-950">
-          <div className="flex items-center gap-3">
-            <div className="flex items-center gap-1.5 text-xs font-bold text-white tracking-tight">
-              <span className="w-2 h-2 rounded-full bg-blue-500"></span>
-              <span>RAMP Subscriptions</span>
-              <span className="text-neutral-500 font-normal">/</span>
-              <span className="font-mono text-neutral-400 font-normal text-[11px] flex items-center gap-1">
-                <Lock className="w-3 h-3 text-emerald-400" />
-                Stripe Billing Engine
-              </span>
-            </div>
+    <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-neutral-950/85 p-4 backdrop-blur-sm">
+      <section
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="subscription-title"
+        className="my-6 w-full max-w-3xl rounded-2xl border border-neutral-800 bg-neutral-900 shadow-2xl"
+      >
+        <header className="flex items-center justify-between border-b border-neutral-800 bg-neutral-950 p-5">
+          <div className="flex items-center gap-2 text-sm font-bold text-white">
+            <Lock className="h-4 w-4 text-emerald-400" />
+            Secure subscription checkout
           </div>
-
-          {/* Stepper Progress */}
-          <div className="hidden sm:flex items-center gap-2 text-xs font-mono">
-            <span className={step === 1 ? 'text-blue-400 font-bold' : 'text-neutral-500'}>
-              1. Choose Plan
-            </span>
-            <span className="text-neutral-700">→</span>
-            <span className={step === 2 ? 'text-blue-400 font-bold' : 'text-neutral-500'}>
-              2. Billing Info
-            </span>
-            <span className="text-neutral-700">→</span>
-            <span className={step === 3 ? 'text-blue-400 font-bold' : 'text-neutral-500'}>
-              3. Payment
-            </span>
-            <span className="text-neutral-700">→</span>
-            <span className={step === 4 ? 'text-emerald-400 font-bold' : 'text-neutral-500'}>
-              4. Receipt
-            </span>
-          </div>
-
           <button
+            type="button"
             onClick={onClose}
-            className="p-1 rounded-lg text-neutral-400 hover:text-white hover:bg-neutral-800 transition-colors"
+            aria-label="Close subscription checkout"
+            className="rounded-lg p-1 text-neutral-400 transition-colors hover:bg-neutral-800 hover:text-white"
           >
-            <X className="w-5 h-5" />
+            <X className="h-5 w-5" />
           </button>
-        </div>
+        </header>
 
-        {/* STEP 1: PLAN SELECTION & CUSTOMIZATION */}
-        {step === 1 && (
-          <div className="p-6 space-y-6">
-            <div className="text-center max-w-xl mx-auto space-y-1">
-              <h2 className="text-xl font-bold text-white tracking-tight">
-                Select Your Verified Talent Access Plan
-              </h2>
-              <p className="text-xs text-neutral-400">
-                Directly invite verified passive candidates. No blind resumes or applicant spam.
-              </p>
-
-              {/* Monthly vs Annual Switcher */}
-              <div className="pt-3 flex justify-center">
-                <div className="p-1 bg-neutral-950 border border-neutral-800 rounded-xl flex items-center gap-1 text-xs">
-                  <button
-                    type="button"
-                    onClick={() => setCadence('monthly')}
-                    className={`px-4 py-1.5 rounded-lg transition-colors font-medium ${
-                      cadence === 'monthly'
-                        ? 'bg-neutral-800 text-white shadow-sm'
-                        : 'text-neutral-400 hover:text-white'
-                    }`}
-                  >
-                    Monthly Billing
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setCadence('annual')}
-                    className={`px-4 py-1.5 rounded-lg transition-colors font-medium flex items-center gap-1.5 ${
-                      cadence === 'annual'
-                        ? 'bg-neutral-800 text-white shadow-sm'
-                        : 'text-neutral-400 hover:text-white'
-                    }`}
-                  >
-                    <span>Annual Billing</span>
-                    <span className="text-[10px] bg-emerald-500/20 text-emerald-400 px-1.5 py-0.5 rounded font-bold">
-                      Save up to ${annualSavings.toLocaleString()}
-                    </span>
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            {/* Plan Comparison Cards */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {/* TIER 1 PLAN */}
-              <div
-                onClick={() => setSelectedTier('tier1')}
-                className={`cursor-pointer p-6 rounded-2xl border transition-all relative flex flex-col justify-between space-y-4 ${
-                  selectedTier === 'tier1'
-                    ? 'bg-neutral-850 border-blue-500 shadow-xl shadow-blue-500/10'
-                    : 'bg-neutral-950/60 border-neutral-800 hover:border-neutral-700'
-                }`}
-              >
-                <div className="space-y-3">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-bold text-neutral-400 uppercase tracking-wider font-mono">
-                      Tier 1 Standard
-                    </span>
-                    {selectedTier === 'tier1' && (
-                      <span className="w-5 h-5 rounded-full bg-blue-500 text-neutral-950 flex items-center justify-center font-bold text-xs">
-                        ✓
-                      </span>
-                    )}
-                  </div>
-
-                  <div>
-                    <h3 className="text-lg font-bold text-white">Verified Search & Discovery</h3>
-                    <p className="text-xs text-neutral-400 mt-1">
-                      For teams actively hiring pre-screened talent across core tech roles.
-                    </p>
-                  </div>
-
-                  <div className="flex items-baseline gap-1 pt-1">
-                    <span className="text-3xl font-extrabold text-white font-mono">
-                      ${cadence === 'monthly' ? '299' : '2,990'}
-                    </span>
-                    <span className="text-xs text-neutral-400 font-mono">
-                      {cadence === 'monthly' ? '/ month' : '/ year (Save $598)'}
-                    </span>
-                  </div>
-
-                  <div className="pt-2 border-t border-neutral-800 space-y-2 text-xs text-neutral-300">
-                    <div className="flex items-center gap-2">
-                      <Check className="w-4 h-4 text-emerald-400 shrink-0" />
-                      <span>Full access to verified candidate search pool</span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <Check className="w-4 h-4 text-emerald-400 shrink-0" />
-                      <span>Fairness-First mathematical randomizer</span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <Check className="w-4 h-4 text-emerald-400 shrink-0" />
-                      <strong className="text-white">25 direct job invites / month</strong>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <Check className="w-4 h-4 text-emerald-400 shrink-0" />
-                      <span>1 Recruiter Seat</span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <Check className="w-4 h-4 text-emerald-400 shrink-0" />
-                      <span>Direct corporate work email access</span>
-                    </div>
-                    <div className="flex items-center gap-2 text-neutral-500 line-through">
-                      <X className="w-4 h-4 text-neutral-600 shrink-0" />
-                      <span>Gemini Values & Narrative Search</span>
-                    </div>
-                    <div className="flex items-center gap-2 text-neutral-500 line-through">
-                      <X className="w-4 h-4 text-neutral-600 shrink-0" />
-                      <span>Direct phone & calendar scheduling links</span>
-                    </div>
-                    <div className="flex items-center gap-2 text-neutral-500 line-through">
-                      <X className="w-4 h-4 text-neutral-600 shrink-0" />
-                      <span>Cryptographic registrar audit vault</span>
-                    </div>
-                    <div className="flex items-center gap-2 text-neutral-500 line-through">
-                      <X className="w-4 h-4 text-neutral-600 shrink-0" />
-                      <span>Real-time instant join alerts</span>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="text-[11px] font-mono text-neutral-500 text-center pt-2">
-                  Billed {cadence === 'monthly' ? 'monthly recurring' : 'annually ($249/mo eff.)'}
-                </div>
-              </div>
-
-              {/* TIER 2 PLAN */}
-              <div
-                onClick={() => setSelectedTier('tier2')}
-                className={`cursor-pointer p-6 rounded-2xl border transition-all relative flex flex-col justify-between space-y-4 ${
-                  selectedTier === 'tier2'
-                    ? 'bg-neutral-850 border-emerald-500 shadow-xl shadow-emerald-500/10'
-                    : 'bg-neutral-950/60 border-neutral-800 hover:border-neutral-700'
-                }`}
-              >
-                <div className="absolute -top-3 right-4 bg-emerald-500 text-neutral-950 font-extrabold text-[10px] uppercase tracking-wider px-3 py-1 rounded-full shadow-md flex items-center gap-1">
-                  <Zap className="w-3 h-3 fill-neutral-950" /> Enterprise Suite
-                </div>
-
-                <div className="space-y-3">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-bold text-emerald-400 uppercase tracking-wider font-mono">
-                      Tier 2 Enterprise
-                    </span>
-                    {selectedTier === 'tier2' && (
-                      <span className="w-5 h-5 rounded-full bg-emerald-500 text-neutral-950 flex items-center justify-center font-bold text-xs">
-                        ✓
-                      </span>
-                    )}
-                  </div>
-
-                  <div>
-                    <h3 className="text-lg font-bold text-white">Full Enterprise Talent Suite</h3>
-                    <p className="text-xs text-neutral-400 mt-1">
-                      Unlimited reach, AI values search, registrar audit vault, team recruiter seats, and real-time alerts.
-                    </p>
-                  </div>
-
-                  <div className="flex items-baseline gap-1 pt-1">
-                    <span className="text-3xl font-extrabold text-white font-mono">
-                      ${cadence === 'monthly' ? '599' : '5,990'}
-                    </span>
-                    <span className="text-xs text-neutral-400 font-mono">
-                      {cadence === 'monthly' ? '/ month' : '/ year (Save $1,198)'}
-                    </span>
-                  </div>
-
-                  <div className="pt-2 border-t border-neutral-800 space-y-2 text-xs text-neutral-300">
-                    <div className="flex items-center gap-2 text-emerald-300">
-                      <Zap className="w-4 h-4 text-emerald-400 shrink-0" />
-                      <strong className="text-white">Unlimited direct job invites + Priority VIP Badge</strong>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <Check className="w-4 h-4 text-emerald-400 shrink-0" />
-                      <strong className="text-white">Gemini Natural Language & Values Search</strong>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <Check className="w-4 h-4 text-emerald-400 shrink-0" />
-                      <strong className="text-white">Cryptographic Registrar Audit Vault</strong>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <Check className="w-4 h-4 text-emerald-400 shrink-0" />
-                      <span>Direct Phone / SMS & Instant Calendar Scheduling</span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <Check className="w-4 h-4 text-emerald-400 shrink-0" />
-                      <span>Up to 5 Team Recruiter Seats included</span>
-                    </div>
-                    <div className="flex items-center gap-2 text-emerald-300">
-                      <Bell className="w-4 h-4 text-emerald-400 shrink-0" />
-                      <span>Real-time Push & Email alerts on new verified talent</span>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="text-[11px] font-mono text-emerald-400/80 text-center pt-2">
-                  Billed {cadence === 'monthly' ? 'monthly recurring' : 'annually ($499/mo eff.)'}
-                </div>
-              </div>
-            </div>
-
-            {/* If Tier 2 is selected: Alert Categories Configuration */}
-            {selectedTier === 'tier2' && (
-              <div className="p-4 rounded-xl bg-neutral-950 border border-neutral-800 space-y-2.5">
-                <div className="flex items-center justify-between text-xs">
-                  <span className="font-semibold text-white flex items-center gap-1.5">
-                    <Bell className="w-3.5 h-3.5 text-emerald-400" />
-                    Configure Instant Alert Categories (Tier 2 Feature):
-                  </span>
-                  <span className="text-[11px] font-mono text-neutral-400">
-                    {alertCategories.length} Categories Monitored
-                  </span>
-                </div>
-                <div className="flex flex-wrap gap-1.5">
-                  {JOB_CATEGORIES.map((cat) => {
-                    const isSelected = alertCategories.includes(cat);
-                    return (
-                      <button
-                        type="button"
-                        key={cat}
-                        onClick={() => toggleAlertCategory(cat)}
-                        className={`text-[11px] px-2.5 py-1 rounded-lg border transition-colors ${
-                          isSelected
-                            ? 'bg-emerald-950/50 border-emerald-500/60 text-emerald-300 font-semibold'
-                            : 'bg-neutral-900 border-neutral-800 text-neutral-400 hover:text-white'
-                        }`}
-                      >
-                        {isSelected ? '✓ ' : '+ '}
-                        {cat}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-
-            {/* Recruiter Seats Add-on */}
-            <div className="p-4 rounded-xl bg-neutral-950 border border-neutral-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
-              <div>
-                <div className="font-semibold text-white">Recruiter Seats & Team Licenses</div>
-                <div className="text-neutral-400 text-[11px]">
-                  1 lead seat included. Additional recruiter logins: $99/mo each.
-                </div>
-              </div>
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => setRecruiterSeats((s) => Math.max(1, s - 1))}
-                  className="w-7 h-7 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-white font-bold flex items-center justify-center"
-                >
-                  -
-                </button>
-                <span className="font-mono font-bold text-white px-2">{recruiterSeats}</span>
-                <button
-                  type="button"
-                  onClick={() => setRecruiterSeats((s) => Math.min(10, s + 1))}
-                  className="w-7 h-7 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-white font-bold flex items-center justify-center"
-                >
-                  +
-                </button>
-              </div>
-            </div>
-
-            {/* Comprehensive Tier 1 vs Tier 2 Comparison Matrix */}
-            <div className="p-4 rounded-xl bg-neutral-950 border border-neutral-800 space-y-3">
-              <div className="flex items-center justify-between text-xs">
-                <span className="font-bold text-white font-mono uppercase tracking-wider">
-                  Plan Comparison Matrix (What's included in Tier 2)
-                </span>
-                <span className="text-[10px] text-emerald-400 font-mono bg-emerald-950 px-2 py-0.5 rounded border border-emerald-900">
-                  Full Enterprise Advantage
-                </span>
-              </div>
-              <div className="divide-y divide-neutral-850 text-xs">
-                {TIER_DIFFERENTIATORS.map((diff) => (
-                  <div key={diff.id} className="py-2.5 grid grid-cols-1 sm:grid-cols-3 gap-2">
-                    <div className="font-semibold text-neutral-200">
-                      {diff.feature}
-                    </div>
-                    <div className="text-neutral-400 font-mono text-[11px]">
-                      <span className="text-neutral-500">Tier 1: </span>
-                      {diff.tier1}
-                    </div>
-                    <div className="text-emerald-400 font-mono text-[11px] flex items-center gap-1">
-                      <span className="text-emerald-500/70">Tier 2: </span>
-                      <span>{diff.tier2}</span>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {/* Navigation to Step 2 */}
-            <div className="flex items-center justify-between pt-3 border-t border-neutral-800">
-              <div className="text-xs text-neutral-400">
-                Selected Plan:{' '}
-                <strong className="text-white capitalize">
-                  {selectedTier === 'tier2' ? 'Tier 2 (Real-Time Alerts)' : 'Tier 1 Standard'}
-                </strong>{' '}
-                · Total: <span className="font-mono text-emerald-400 font-bold">${totalAmount.toFixed(2)}</span>
-              </div>
-              <button
-                type="button"
-                onClick={() => setStep(2)}
-                className="px-6 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs transition-colors flex items-center gap-2 shadow-lg shadow-blue-600/20"
-              >
-                <span>Continue to Billing Details</span>
-                <ArrowRight className="w-4 h-4" />
-              </button>
-            </div>
-          </div>
+        {!isAuthReady && (
+          <p role="status" className="p-6 text-sm text-neutral-300">
+            Checking employer sign-in…
+          </p>
         )}
 
-        {/* STEP 2: CORPORATE CUSTOMER & BILLING DETAILS */}
-        {step === 2 && (
-          <div className="p-6 space-y-5">
+        {isAuthReady && !authSession && (
+          <form onSubmit={submitAuth} className="space-y-4 p-6">
             <div>
-              <h2 className="text-xl font-bold text-white tracking-tight">Corporate Billing Information</h2>
-              <p className="text-xs text-neutral-400">
-                This information will appear on your official monthly/annual tax invoice and Stripe customer record.
+              <h2 id="subscription-title" className="text-xl font-bold text-white">
+                Sign in to manage employer billing
+              </h2>
+              <p className="mt-1 text-xs text-neutral-400">
+                Billing subscriptions are linked to your authenticated Supabase account.
               </p>
             </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            {!supabase && (
+              <p role="alert" className="rounded-lg border border-amber-800 bg-amber-950/30 p-3 text-xs text-amber-300">
+                Add the Supabase browser URL and anon key to enable employer authentication.
+              </p>
+            )}
+            {authMode === 'sign-up' && (
               <div>
-                <label className="block text-xs font-semibold text-neutral-300 mb-1.5">
-                  Legal Corporate Entity Name *
+                <label htmlFor="signup-company" className="mb-1.5 block text-xs font-semibold text-neutral-300">
+                  Company name
                 </label>
                 <input
-                  type="text"
+                  id="signup-company"
                   required
                   value={companyName}
-                  onChange={(e) => setCompanyName(e.target.value)}
-                  className="w-full px-3 py-2 text-xs bg-neutral-950 border border-neutral-800 rounded-lg text-white focus:outline-none focus:border-blue-500"
+                  onChange={(event) => setCompanyName(event.target.value)}
+                  className="w-full rounded-lg border border-neutral-800 bg-neutral-950 px-3 py-2.5 text-sm text-white"
                 />
               </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-neutral-300 mb-1.5">
-                  Tax ID / VAT / EIN *
-                </label>
-                <input
-                  type="text"
-                  required
-                  value={taxId}
-                  onChange={(e) => setTaxId(e.target.value)}
-                  className="w-full px-3 py-2 text-xs bg-neutral-950 border border-neutral-800 rounded-lg text-white font-mono focus:outline-none focus:border-blue-500"
-                />
-              </div>
+            )}
+            <div>
+              <label htmlFor="auth-email" className="mb-1.5 block text-xs font-semibold text-neutral-300">
+                Work email
+              </label>
+              <input
+                id="auth-email"
+                type="email"
+                autoComplete="email"
+                required
+                value={authEmail}
+                onChange={(event) => setAuthEmail(event.target.value)}
+                className="w-full rounded-lg border border-neutral-800 bg-neutral-950 px-3 py-2.5 text-sm text-white"
+              />
             </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div>
-                <label className="block text-xs font-semibold text-neutral-300 mb-1.5">
-                  Billing Email (for Stripe Receipts) *
-                </label>
-                <input
-                  type="email"
-                  required
-                  value={billingEmail}
-                  onChange={(e) => setBillingEmail(e.target.value)}
-                  className="w-full px-3 py-2 text-xs bg-neutral-950 border border-neutral-800 rounded-lg text-white focus:outline-none focus:border-blue-500"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-neutral-300 mb-1.5">
-                  Authorized Signer / Billing Contact *
-                </label>
-                <input
-                  type="text"
-                  required
-                  value={cardholderName}
-                  onChange={(e) => setCardholderName(e.target.value)}
-                  className="w-full px-3 py-2 text-xs bg-neutral-950 border border-neutral-800 rounded-lg text-white focus:outline-none focus:border-blue-500"
-                />
-              </div>
+            <div>
+              <label htmlFor="auth-password" className="mb-1.5 block text-xs font-semibold text-neutral-300">
+                Password
+              </label>
+              <input
+                id="auth-password"
+                type="password"
+                autoComplete={authMode === 'sign-up' ? 'new-password' : 'current-password'}
+                minLength={8}
+                required
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+                className="w-full rounded-lg border border-neutral-800 bg-neutral-950 px-3 py-2.5 text-sm text-white"
+              />
             </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-              <div className="sm:col-span-2">
-                <label className="block text-xs font-semibold text-neutral-300 mb-1.5">
-                  Billing Street Address *
-                </label>
-                <input
-                  type="text"
-                  required
-                  value={billingAddress}
-                  onChange={(e) => setBillingAddress(e.target.value)}
-                  className="w-full px-3 py-2 text-xs bg-neutral-950 border border-neutral-800 rounded-lg text-white focus:outline-none focus:border-blue-500"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-neutral-300 mb-1.5">
-                  City *
-                </label>
-                <input
-                  type="text"
-                  required
-                  value={city}
-                  onChange={(e) => setCity(e.target.value)}
-                  className="w-full px-3 py-2 text-xs bg-neutral-950 border border-neutral-800 rounded-lg text-white focus:outline-none focus:border-blue-500"
-                />
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div>
-                <label className="block text-xs font-semibold text-neutral-300 mb-1.5">
-                  Postal / ZIP Code *
-                </label>
-                <input
-                  type="text"
-                  required
-                  value={postalCode}
-                  onChange={(e) => setPostalCode(e.target.value)}
-                  className="w-full px-3 py-2 text-xs bg-neutral-950 border border-neutral-800 rounded-lg text-white font-mono focus:outline-none focus:border-blue-500"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-neutral-300 mb-1.5">
-                  Country *
-                </label>
-                <select
-                  value={country}
-                  onChange={(e) => setCountry(e.target.value)}
-                  className="w-full px-3 py-2 text-xs bg-neutral-950 border border-neutral-800 rounded-lg text-white focus:outline-none"
-                >
-                  <option value="United States">United States</option>
-                  <option value="Canada">Canada</option>
-                  <option value="United Kingdom">United Kingdom</option>
-                  <option value="Germany">Germany</option>
-                  <option value="Australia">Australia</option>
-                </select>
-              </div>
-            </div>
-
-            {/* Stepper Buttons */}
-            <div className="flex items-center justify-between pt-4 border-t border-neutral-800">
+            {errorMessage && (
+              <p role="alert" className="flex items-start gap-2 rounded-lg border border-red-800 bg-red-950/40 p-3 text-xs text-red-300">
+                <AlertCircle className="h-4 w-4 shrink-0" />
+                {errorMessage}
+              </p>
+            )}
+            <div className="flex flex-col-reverse justify-between gap-3 border-t border-neutral-800 pt-4 sm:flex-row">
               <button
                 type="button"
-                onClick={() => setStep(1)}
-                className="px-4 py-2 text-xs text-neutral-400 hover:text-white"
+                disabled={isLoading || !supabase}
+                onClick={() => setAuthMode(authMode === 'sign-in' ? 'sign-up' : 'sign-in')}
+                className="text-xs text-neutral-400 hover:text-white disabled:opacity-50"
               >
-                ← Back to Plans
+                {authMode === 'sign-in' ? 'Create employer account' : 'Already registered? Sign in'}
               </button>
               <button
-                type="button"
-                onClick={() => setStep(3)}
-                className="px-6 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs transition-colors flex items-center gap-2 shadow-lg shadow-blue-600/20"
+                type="submit"
+                disabled={isLoading || !supabase}
+                className="rounded-xl bg-blue-600 px-6 py-3 text-xs font-bold text-white hover:bg-blue-500 disabled:opacity-50"
               >
-                <span>Proceed to Stripe Payment</span>
-                <ArrowRight className="w-4 h-4" />
+                {isLoading ? 'Please wait…' : authMode === 'sign-in' ? 'Sign in' : 'Create account'}
               </button>
             </div>
-          </div>
+          </form>
         )}
 
-        {/* STEP 3: MOCK STRIPE PAYMENT PROCESSING INTERFACE */}
-        {step === 3 && (
-          <div className="p-6 space-y-6">
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-              {/* Left Column: Stripe Elements Payment Form */}
-              <div className="lg:col-span-2 space-y-5">
-                <div>
-                  <h2 className="text-xl font-bold text-white tracking-tight">Payment Method</h2>
-                  <p className="text-xs text-neutral-400">
-                    Secured by Stripe Elements. Your credentials are encrypted end-to-end.
-                  </p>
-                </div>
-
-                {/* Payment Method Tabs */}
-                <div className="p-1 bg-neutral-950 border border-neutral-800 rounded-xl flex items-center gap-1 text-xs">
-                  <button
-                    type="button"
-                    onClick={() => setPaymentMethodType('card')}
-                    className={`flex-1 py-1.5 rounded-lg font-medium transition-colors flex items-center justify-center gap-1.5 ${
-                      paymentMethodType === 'card'
-                        ? 'bg-neutral-800 text-white'
-                        : 'text-neutral-400 hover:text-white'
-                    }`}
-                  >
-                    <CreditCard className="w-3.5 h-3.5" />
-                    Card
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setPaymentMethodType('ach')}
-                    className={`flex-1 py-1.5 rounded-lg font-medium transition-colors flex items-center justify-center gap-1.5 ${
-                      paymentMethodType === 'ach'
-                        ? 'bg-neutral-800 text-white'
-                        : 'text-neutral-400 hover:text-white'
-                    }`}
-                  >
-                    <Landmark className="w-3.5 h-3.5" />
-                    ACH Direct Debit
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setPaymentMethodType('link')}
-                    className={`flex-1 py-1.5 rounded-lg font-medium transition-colors flex items-center justify-center gap-1.5 ${
-                      paymentMethodType === 'link'
-                        ? 'bg-neutral-800 text-white'
-                        : 'text-neutral-400 hover:text-white'
-                    }`}
-                  >
-                    <Zap className="w-3.5 h-3.5 text-emerald-400" />
-                    Stripe Link (1-Click)
-                  </button>
-                </div>
-
-                {/* Test Cards Quick Presets */}
-                <div className="p-3 bg-neutral-950/70 border border-neutral-800 rounded-xl space-y-1.5 text-xs">
-                  <div className="flex items-center justify-between text-[11px] text-neutral-400">
-                    <span className="font-semibold text-neutral-300">Stripe Sandbox Test Cards:</span>
-                    <span>Click to autofill scenario</span>
-                  </div>
-                  <div className="flex flex-wrap gap-1.5">
-                    <button
-                      type="button"
-                      onClick={() => applyTestCard('success')}
-                      className="px-2.5 py-1 rounded bg-neutral-900 hover:bg-neutral-850 text-emerald-400 border border-emerald-900/50 text-[11px] font-mono"
-                    >
-                      ✓ 4242 (Instant Success)
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => applyTestCard('3ds')}
-                      className="px-2.5 py-1 rounded bg-neutral-900 hover:bg-neutral-850 text-blue-400 border border-blue-900/50 text-[11px] font-mono"
-                    >
-                      🛡️ 0005 (3D Secure Challenge)
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => applyTestCard('decline')}
-                      className="px-2.5 py-1 rounded bg-neutral-900 hover:bg-neutral-850 text-red-400 border border-red-900/50 text-[11px] font-mono"
-                    >
-                      ✕ 0002 (Card Declined)
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => applyTestCard('insufficient')}
-                      className="px-2.5 py-1 rounded bg-neutral-900 hover:bg-neutral-850 text-amber-400 border border-amber-900/50 text-[11px] font-mono"
-                    >
-                      ⚠️ 0127 (Insufficient Limit)
-                    </button>
-                  </div>
-                </div>
-
-                {/* Card Fields Form */}
-                <form onSubmit={handlePaymentSubmit} className="space-y-4">
-                  {paymentMethodType === 'card' && (
-                    <div className="p-4 rounded-xl bg-neutral-950 border border-neutral-800 space-y-3">
-                      <div>
-                        <div className="flex justify-between items-center mb-1">
-                          <label className="text-[11px] font-semibold text-neutral-300">
-                            Card Number
-                          </label>
-                          <span className="text-[11px] font-mono font-bold text-blue-400">
-                            {getCardBrand(cardNumber)}
-                          </span>
-                        </div>
-                        <div className="relative">
-                          <input
-                            type="text"
-                            required
-                            value={cardNumber}
-                            onChange={(e) => setCardNumber(e.target.value)}
-                            className="w-full pl-3 pr-10 py-2.5 text-xs bg-neutral-900 border border-neutral-800 rounded-lg text-white font-mono focus:outline-none focus:border-blue-500"
-                          />
-                          <CreditCard className="w-4 h-4 text-neutral-500 absolute right-3 top-3" />
-                        </div>
-                      </div>
-
-                      <div className="grid grid-cols-2 gap-3">
-                        <div>
-                          <label className="block text-[11px] font-semibold text-neutral-300 mb-1">
-                            Expiration Date
-                          </label>
-                          <input
-                            type="text"
-                            required
-                            value={cardExpiry}
-                            onChange={(e) => setCardExpiry(e.target.value)}
-                            placeholder="MM / YY"
-                            className="w-full px-3 py-2 text-xs bg-neutral-900 border border-neutral-800 rounded-lg text-white font-mono focus:outline-none focus:border-blue-500"
-                          />
-                        </div>
-
-                        <div>
-                          <div className="flex justify-between items-center mb-1">
-                            <label className="text-[11px] font-semibold text-neutral-300">
-                              CVC Security Code
-                            </label>
-                            <Lock className="w-3 h-3 text-neutral-500" />
-                          </div>
-                          <input
-                            type="text"
-                            required
-                            value={cardCvc}
-                            onChange={(e) => setCardCvc(e.target.value)}
-                            placeholder="CVC"
-                            className="w-full px-3 py-2 text-xs bg-neutral-900 border border-neutral-800 rounded-lg text-white font-mono focus:outline-none focus:border-blue-500"
-                          />
-                        </div>
-                      </div>
-
-                      <div>
-                        <label className="block text-[11px] font-semibold text-neutral-300 mb-1">
-                          Name on Card
-                        </label>
-                        <input
-                          type="text"
-                          required
-                          value={cardholderName}
-                          onChange={(e) => setCardholderName(e.target.value)}
-                          className="w-full px-3 py-2 text-xs bg-neutral-900 border border-neutral-800 rounded-lg text-white focus:outline-none focus:border-blue-500"
-                        />
-                      </div>
-                    </div>
-                  )}
-
-                  {paymentMethodType === 'ach' && (
-                    <div className="p-4 rounded-xl bg-neutral-950 border border-neutral-800 space-y-3">
-                      <div>
-                        <label className="block text-[11px] font-semibold text-neutral-300 mb-1">
-                          Bank Routing Number (ABA)
-                        </label>
-                        <input
-                          type="text"
-                          value={bankRouting}
-                          onChange={(e) => setBankRouting(e.target.value)}
-                          className="w-full px-3 py-2 text-xs bg-neutral-900 border border-neutral-800 rounded-lg text-white font-mono"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-[11px] font-semibold text-neutral-300 mb-1">
-                          Corporate Checking Account Number
-                        </label>
-                        <input
-                          type="text"
-                          value={bankAccount}
-                          onChange={(e) => setBankAccount(e.target.value)}
-                          className="w-full px-3 py-2 text-xs bg-neutral-900 border border-neutral-800 rounded-lg text-white font-mono"
-                        />
-                      </div>
-                    </div>
-                  )}
-
-                  {paymentMethodType === 'link' && (
-                    <div className="p-4 rounded-xl bg-neutral-950 border border-neutral-800 space-y-2 text-xs">
-                      <div className="font-semibold text-white flex items-center gap-1.5">
-                        <Zap className="w-4 h-4 text-emerald-400" />
-                        Stripe Link 1-Click Pay
-                      </div>
-                      <p className="text-neutral-400 text-[11px]">
-                        Pay with your saved credentials across millions of Stripe-enabled businesses.
-                      </p>
-                      <div className="p-2.5 rounded-lg bg-neutral-900 font-mono text-[11px] text-neutral-300 flex justify-between">
-                        <span>{billingEmail}</span>
-                        <span className="text-emerald-400">Authenticated ✓</span>
-                      </div>
-                    </div>
-                  )}
-
-                  {errorMessage && (
-                    <div className="p-3 bg-red-950/40 border border-red-800/60 rounded-xl text-xs text-red-300 flex items-start gap-2">
-                      <AlertCircle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
-                      <div>
-                        <strong className="block">Stripe Gateway Error</strong>
-                        <span>{errorMessage}</span>
-                      </div>
-                    </div>
-                  )}
-
-                  {isProcessing && (
-                    <div className="p-4 rounded-xl bg-neutral-950 border border-neutral-800 space-y-2">
-                      <div className="flex items-center justify-between text-xs font-mono">
-                        <span className="text-blue-400 flex items-center gap-1.5">
-                          <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                          {processingStage}
-                        </span>
-                        <span className="text-neutral-400">{processingProgress}%</span>
-                      </div>
-                      <div className="w-full bg-neutral-900 rounded-full h-1.5 overflow-hidden">
-                        <div
-                          className="bg-blue-500 h-full transition-all duration-300 rounded-full"
-                          style={{ width: `${processingProgress}%` }}
-                        />
-                      </div>
-                    </div>
-                  )}
-
-                  <div className="flex items-center justify-between pt-2">
-                    <button
-                      type="button"
-                      onClick={() => setStep(2)}
-                      disabled={isProcessing}
-                      className="px-4 py-2 text-xs text-neutral-400 hover:text-white disabled:opacity-50"
-                    >
-                      ← Back
-                    </button>
-
-                    <button
-                      type="submit"
-                      disabled={isProcessing}
-                      className="px-8 py-3 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs transition-colors flex items-center gap-2 shadow-xl shadow-blue-600/25 disabled:opacity-50"
-                    >
-                      <Lock className="w-3.5 h-3.5" />
-                      <span>Pay ${totalAmount.toFixed(2)} USD</span>
-                    </button>
-                  </div>
-                </form>
-              </div>
-
-              {/* Right Column: Itemized Order Summary */}
-              <div className="p-5 rounded-2xl bg-neutral-950 border border-neutral-800 flex flex-col justify-between space-y-4">
-                <div className="space-y-4 text-xs">
-                  <div className="border-b border-neutral-850 pb-3">
-                    <h3 className="font-bold text-white text-sm">Order Summary</h3>
-                    <div className="text-[11px] text-neutral-400 font-mono mt-0.5">
-                      Merchant: RAMP Technologies Inc.
-                    </div>
-                  </div>
-
-                  <div className="space-y-2">
-                    <div className="flex justify-between">
-                      <span className="text-neutral-400">
-                        {isTier2 ? 'Tier 2 (Real-Time Alerts)' : 'Tier 1 Standard'}
-                      </span>
-                      <span className="font-mono text-white">${basePrice.toLocaleString()}</span>
-                    </div>
-
-                    {recruiterSeats > 1 && (
-                      <div className="flex justify-between text-neutral-400">
-                        <span>Extra Seats ({recruiterSeats - 1})</span>
-                        <span className="font-mono text-white">${extraSeatPrice.toLocaleString()}</span>
-                      </div>
-                    )}
-
-                    <div className="flex justify-between text-neutral-400">
-                      <span>Subtotal</span>
-                      <span className="font-mono text-white">${subtotal.toLocaleString()}</span>
-                    </div>
-
-                    <div className="flex justify-between text-neutral-400">
-                      <span>Sales Tax / VAT (8.25%)</span>
-                      <span className="font-mono text-white">${taxAmount.toFixed(2)}</span>
-                    </div>
-
-                    {cadence === 'annual' && (
-                      <div className="flex justify-between text-emerald-400 font-medium">
-                        <span>Annual Prepay Discount</span>
-                        <span className="font-mono">-${annualSavings.toLocaleString()}</span>
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="border-t border-neutral-800 pt-3 flex justify-between items-baseline">
-                    <span className="font-bold text-white text-sm">Total Due Today</span>
-                    <div className="text-right">
-                      <span className="text-xl font-extrabold text-white font-mono">
-                        ${totalAmount.toFixed(2)}
-                      </span>
-                      <div className="text-[10px] text-neutral-500 font-mono">USD currency</div>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="p-3 rounded-xl bg-neutral-900/60 border border-neutral-850 text-[11px] text-neutral-400 space-y-1">
-                  <div className="flex items-center gap-1 font-semibold text-neutral-300">
-                    <Shield className="w-3.5 h-3.5 text-emerald-400" />
-                    Stripe PCI-DSS Level 1 Security
-                  </div>
-                  <div>
-                    Cancel anytime in 1 click from your employer dashboard before renewal date.
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* STEP 4: ORDER CONFIRMATION & ITEMIZED TAX INVOICE / RECEIPT */}
-        {step === 4 && generatedInvoice && (
-          <div className="p-6 space-y-6">
-            {/* Success Celebration Banner */}
-            <div className="p-5 rounded-2xl bg-emerald-950/25 border border-emerald-800/50 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-              <div className="flex items-center gap-3">
-                <div className="w-12 h-12 rounded-xl bg-emerald-500/20 text-emerald-400 flex items-center justify-center font-bold">
-                  <CheckCircle className="w-6 h-6" />
-                </div>
-                <div>
-                  <div className="text-xs font-bold uppercase tracking-wider text-emerald-400 font-mono">
-                    Payment Successful · Subscription Active
-                  </div>
-                  <h2 className="text-lg font-bold text-white tracking-tight mt-0.5">
-                    {companyName} is now upgraded to {selectedTier === 'tier2' ? 'Tier 2' : 'Tier 1'}!
-                  </h2>
-                  <p className="text-xs text-neutral-300">
-                    Unlimited direct job invites and verified talent search are immediately unlocked.
-                  </p>
-                </div>
-              </div>
-
-              <div className="flex items-center gap-2 shrink-0">
+        {authSession && (
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-neutral-800 px-6 py-3 text-xs">
+            <span className="text-neutral-300">
+              Signed in as <strong className="text-white">{authSession.user.email}</strong>
+            </span>
+            <div className="flex gap-3">
+              {hasStripeCustomer && (
                 <button
                   type="button"
-                  onClick={handleDownloadInvoice}
-                  className="px-4 py-2 rounded-xl bg-neutral-850 hover:bg-neutral-800 text-white border border-neutral-700 text-xs font-semibold transition-colors flex items-center gap-1.5"
+                  disabled={isLoading}
+                  onClick={() => void openBillingPortal()}
+                  className="text-emerald-400 hover:text-emerald-300 disabled:opacity-50"
                 >
-                  <Download className="w-3.5 h-3.5" />
-                  Download Tax Receipt
+                  Manage Billing
                 </button>
-              </div>
-            </div>
-
-            {/* Official Itemized Receipt View */}
-            <div className="p-6 rounded-2xl bg-neutral-950 border border-neutral-800 space-y-5">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-4 border-b border-neutral-850 gap-2">
-                <div>
-                  <div className="text-sm font-extrabold text-white tracking-tight">
-                    RAMP PLATFORM TAX INVOICE
-                  </div>
-                  <div className="text-xs text-neutral-400 font-mono">
-                    Invoice No: <strong className="text-white">{generatedInvoice.invoiceNumber}</strong>
-                  </div>
-                </div>
-
-                <div className="text-right text-xs font-mono">
-                  <div className="text-emerald-400 font-bold">STATUS: PAID</div>
-                  <div className="text-neutral-500">
-                    {new Date(generatedInvoice.date).toLocaleDateString()}
-                  </div>
-                </div>
-              </div>
-
-              {/* Billed To */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs font-mono">
-                <div>
-                  <div className="text-[10px] text-neutral-500 uppercase">Customer / Licensee</div>
-                  <div className="font-bold text-white mt-0.5">{companyName}</div>
-                  <div className="text-neutral-400">{cardholderName}</div>
-                  <div className="text-neutral-400">{billingAddress}, {city}, {postalCode}</div>
-                  <div className="text-neutral-500 mt-1">Tax ID / EIN: {taxId}</div>
-                </div>
-
-                <div className="sm:text-right">
-                  <div className="text-[10px] text-neutral-500 uppercase">Payment Details</div>
-                  <div className="text-neutral-300 mt-0.5">
-                    {generatedInvoice.paymentMethod.brand} ···· {generatedInvoice.paymentMethod.last4}
-                  </div>
-                  <div className="text-neutral-500">
-                    Stripe PI: {generatedInvoice.stripePaymentIntentId}
-                  </div>
-                  <div className="text-neutral-500">
-                    Stripe Sub: {generatedInvoice.stripeSubscriptionId}
-                  </div>
-                </div>
-              </div>
-
-              {/* Itemized Line Items Table */}
-              <div className="pt-2">
-                <table className="w-full text-xs font-mono">
-                  <thead>
-                    <tr className="border-b border-neutral-800 text-neutral-400 text-left">
-                      <th className="py-2">Description</th>
-                      <th className="py-2 text-right">Cadence</th>
-                      <th className="py-2 text-right">Seats</th>
-                      <th className="py-2 text-right">Amount</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-neutral-850">
-                    <tr>
-                      <td className="py-2.5 font-bold text-white">
-                        {generatedInvoice.planName}
-                      </td>
-                      <td className="py-2.5 text-right text-neutral-300 capitalize">{cadence}</td>
-                      <td className="py-2.5 text-right text-neutral-300">{recruiterSeats}</td>
-                      <td className="py-2.5 text-right font-bold text-white">${subtotal.toLocaleString()}</td>
-                    </tr>
-                    <tr>
-                      <td colSpan={3} className="py-2 text-right text-neutral-400">
-                        Sales Tax / VAT (8.25%)
-                      </td>
-                      <td className="py-2 text-right text-neutral-300">${taxAmount.toFixed(2)}</td>
-                    </tr>
-                    <tr className="font-bold text-sm text-white">
-                      <td colSpan={3} className="py-2.5 text-right">
-                        Total Paid
-                      </td>
-                      <td className="py-2.5 text-right text-emerald-400">${totalAmount.toFixed(2)} USD</td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-            </div>
-
-            {/* Action Bar */}
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-2">
+              )}
               <button
                 type="button"
-                onClick={() => {
-                  const receiptEmail = emailLogs.find((e) => e.subject.includes(generatedInvoice.invoiceNumber));
-                  if (receiptEmail) {
-                    setSelectedEmailModal(receiptEmail);
-                  }
-                }}
-                className="text-xs text-blue-400 hover:underline flex items-center gap-1.5"
+                disabled={isLoading}
+                onClick={() => void supabase?.auth.signOut()}
+                className="text-neutral-400 hover:text-white disabled:opacity-50"
               >
-                <Mail className="w-3.5 h-3.5" />
-                View Delivered Email Receipt
-              </button>
-
-              <button
-                type="button"
-                onClick={onClose}
-                className="px-6 py-2.5 rounded-xl bg-white hover:bg-neutral-200 text-neutral-950 font-bold text-xs transition-colors flex items-center justify-center gap-2 shadow-lg"
-              >
-                <span>Go to Verified Candidate Search</span>
-                <ArrowRight className="w-4 h-4" />
+                Sign out
               </button>
             </div>
           </div>
         )}
 
-        {/* 3D SECURE CHALLENGE MODAL SIMULATOR */}
-        {is3DSModalOpen && (
-          <div className="fixed inset-0 z-60 flex items-center justify-center p-4 bg-neutral-950/90 backdrop-blur-md">
-            <div className="w-full max-w-md bg-neutral-900 border border-neutral-800 rounded-2xl p-6 shadow-2xl space-y-4">
-              <div className="flex items-center justify-between border-b border-neutral-800 pb-3">
-                <div className="flex items-center gap-2 text-xs font-bold text-white font-mono">
-                  <Shield className="w-4 h-4 text-blue-400" />
-                  <span>Stripe 3D Secure 2.0 Challenge</span>
-                </div>
-                <button
-                  onClick={() => setIs3DSModalOpen(false)}
-                  className="text-neutral-400 hover:text-white"
-                >
-                  ✕
-                </button>
-              </div>
+        {authSession && <form onSubmit={startCheckout} className="space-y-6 p-6">
+          <div>
+            <h2 id="subscription-title" className="text-xl font-bold text-white">
+              Choose an employer plan
+            </h2>
+            <p className="mt-1 text-xs text-neutral-400">
+              Payment details are collected by Stripe Checkout, not by RAMPED.
+            </p>
+          </div>
 
-              <div className="text-xs text-neutral-300 space-y-2">
-                <p>
-                  Your card issuer requires two-factor verification to authenticate this ${totalAmount.toFixed(2)} USD transaction.
-                </p>
-                <div className="p-3 bg-neutral-950 rounded-xl border border-neutral-800 font-mono text-[11px] text-neutral-400">
-                  <div>Merchant: RAMP Technologies Inc.</div>
-                  <div>Card: •••• 0005</div>
-                  <div className="text-emerald-400 mt-1">Mock OTP Test Code: Enter "123456"</div>
-                </div>
-              </div>
+          <div className="grid gap-4 sm:grid-cols-2">
+            {(['tier1', 'tier2'] as const).map((plan) => (
+              <button
+                type="button"
+                key={plan}
+                onClick={() => setTier(plan)}
+                aria-pressed={tier === plan}
+                className={`rounded-xl border p-5 text-left transition-colors ${
+                  tier === plan
+                    ? 'border-emerald-500 bg-emerald-950/20'
+                    : 'border-neutral-800 bg-neutral-950 hover:border-neutral-700'
+                }`}
+              >
+                <span className="text-xs font-bold uppercase tracking-wider text-neutral-300">
+                  {plan === 'tier1' ? 'Tier 1 · Standard' : 'Tier 2 · Enterprise'}
+                </span>
+                <span className="mt-3 block text-2xl font-extrabold text-white">
+                  ${prices[plan][cadence].toLocaleString()}
+                  <span className="ml-1 text-xs font-normal text-neutral-400">
+                    / {cadence === 'monthly' ? 'month' : 'year'}
+                  </span>
+                </span>
+                <span className="mt-3 flex items-start gap-2 text-xs text-neutral-300">
+                  <Check className="h-4 w-4 shrink-0 text-emerald-400" />
+                  {plan === 'tier1'
+                    ? 'Verified search, basic filters, and 25 monthly invites.'
+                    : 'Unlimited invites, natural-language search, and instant alerts.'}
+                </span>
+              </button>
+            ))}
+          </div>
 
-              <form onSubmit={handle3DSSubmit} className="space-y-4">
-                <div>
-                  <label className="block text-xs font-semibold text-neutral-300 mb-1">
-                    Enter SMS Security Code:
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    value={otpCode}
-                    onChange={(e) => setOtpCode(e.target.value)}
-                    placeholder="123456"
-                    className="w-full px-3 py-2 text-sm bg-neutral-950 border border-neutral-800 rounded-lg text-white font-mono text-center tracking-widest focus:outline-none focus:border-blue-500"
-                  />
-                </div>
+          <div className="flex gap-2 rounded-lg border border-neutral-800 bg-neutral-950 p-1">
+            {(['monthly', 'annual'] as const).map((option) => (
+              <button
+                key={option}
+                type="button"
+                aria-pressed={cadence === option}
+                onClick={() => setCadence(option)}
+                className={`flex-1 rounded-md py-2 text-xs font-semibold capitalize ${
+                  cadence === option
+                    ? 'bg-neutral-800 text-white'
+                    : 'text-neutral-400 hover:text-white'
+                }`}
+              >
+                {option} billing
+              </button>
+            ))}
+          </div>
 
-                <div className="flex justify-end gap-2">
+          {tier === 'tier2' && (
+            <fieldset className="space-y-2 rounded-xl border border-neutral-800 bg-neutral-950 p-4">
+              <legend className="px-1 text-xs font-semibold text-white">
+                Instant alert categories
+              </legend>
+              <div className="flex flex-wrap gap-2">
+                {JOB_CATEGORIES.map((category) => (
                   <button
                     type="button"
-                    onClick={() => setIs3DSModalOpen(false)}
-                    className="px-4 py-2 text-xs text-neutral-400 hover:text-white"
+                    key={category}
+                    aria-pressed={alertCategories.includes(category)}
+                    onClick={() => toggleAlertCategory(category)}
+                    className={`rounded-lg border px-2.5 py-1 text-[11px] ${
+                      alertCategories.includes(category)
+                        ? 'border-emerald-700 bg-emerald-950/50 text-emerald-300'
+                        : 'border-neutral-800 text-neutral-400'
+                    }`}
                   >
-                    Cancel
+                    {category}
                   </button>
-                  <button
-                    type="submit"
-                    className="px-5 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs transition-colors"
-                  >
-                    Authorize Payment
-                  </button>
-                </div>
-              </form>
-            </div>
+                ))}
+              </div>
+            </fieldset>
+          )}
+
+          <div>
+            <label htmlFor="billing-company" className="mb-1.5 block text-xs font-semibold text-neutral-300">
+              Company name
+            </label>
+            <input
+              id="billing-company"
+              required
+              value={companyName}
+              onChange={(event) => setCompanyName(event.target.value)}
+              className="w-full rounded-lg border border-neutral-800 bg-neutral-950 px-3 py-2.5 text-sm text-white focus:border-blue-500 focus:outline-none"
+            />
           </div>
-        )}
-      </div>
+
+          <div>
+            <label htmlFor="billing-email" className="mb-1.5 block text-xs font-semibold text-neutral-300">
+              Account billing email
+            </label>
+            <input
+              id="billing-email"
+              type="email"
+              autoComplete="email"
+              readOnly
+              value={authSession.user.email || email}
+              className="w-full rounded-lg border border-neutral-800 bg-neutral-950 px-3 py-2.5 text-sm text-white focus:border-blue-500 focus:outline-none"
+            />
+            <p className="mt-1 text-[11px] text-neutral-500">
+              Stripe will collect your payment and billing address securely.
+            </p>
+          </div>
+
+          {billingStatus === 'cancelled' && (
+            <p className="rounded-lg border border-neutral-700 bg-neutral-950 p-3 text-xs text-neutral-300">
+              Checkout was cancelled. No subscription was activated.
+            </p>
+          )}
+          {billingStatus === 'active' && (
+            <p role="status" className="rounded-lg border border-emerald-800 bg-emerald-950/40 p-3 text-xs text-emerald-300">
+              Stripe confirmed your subscription. The selected plan is now active.
+            </p>
+          )}
+          {isLoading && (
+            <p role="status" className="text-xs text-blue-300">
+              {billingStatus === 'idle' ? 'Connecting to Stripe Checkout…' : 'Verifying your Stripe subscription…'}
+            </p>
+          )}
+          {errorMessage && (
+            <p role="alert" className="flex items-start gap-2 rounded-lg border border-red-800 bg-red-950/40 p-3 text-xs text-red-300">
+              <AlertCircle className="h-4 w-4 shrink-0" />
+              {errorMessage}
+            </p>
+          )}
+
+          <footer className="flex flex-col-reverse items-center justify-between gap-3 border-t border-neutral-800 pt-4 sm:flex-row">
+            <p className="text-[11px] text-neutral-500">
+              Available payment methods and any configured taxes are shown in Stripe before you confirm.
+            </p>
+            <button
+              type="submit"
+              disabled={isLoading || billingStatus === 'active'}
+              className="flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 px-6 py-3 text-xs font-bold text-white transition-colors hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
+            >
+              <Lock className="h-3.5 w-3.5" />
+              Continue to Stripe · ${price.toLocaleString()} / {cadence === 'monthly' ? 'month' : 'year'}
+              <ExternalLink className="h-3.5 w-3.5" />
+            </button>
+          </footer>
+        </form>}
+      </section>
     </div>
   );
 };
