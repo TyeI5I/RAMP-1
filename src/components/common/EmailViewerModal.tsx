@@ -52,7 +52,7 @@ export const EmailViewerModal: React.FC = () => {
         </div>
 
         {/* Rendered HTML Body */}
-        <div className="p-6 bg-neutral-100 text-neutral-900 max-h-[500px] overflow-y-auto">
+        <div className="p-6 bg-neutral-100 text-neutral-900 max-h-125 overflow-y-auto">
           <div
             dangerouslySetInnerHTML={{ __html: selectedEmailModal.htmlBody }}
             className="email-content"

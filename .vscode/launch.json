@@ -3,18 +3,17 @@
   "configurations": [
     {
       "name": "Run RAMPED",
-      "type": "node",
+      "type": "node-terminal",
       "request": "launch",
-      "runtimeExecutable": "node",
-      "runtimeArgs": ["--import", "tsx"],
-      "args": ["${workspaceFolder}/server.ts"],
+      "command": "npm run dev",
       "cwd": "${workspaceFolder}",
       "env": {
         "NODE_ENV": "development"
       },
-      "console": "integratedTerminal",
-      "noDebug": true,
-      "skipFiles": ["<node_internals>/**"]
+      "presentation": {
+        "group": "ramped",
+        "order": 1
+      }
     },
     {
       "name": "Debug RAMPED",
@@ -28,6 +27,10 @@
         "NODE_ENV": "development"
       },
       "console": "integratedTerminal",
+      "presentation": {
+        "group": "ramped",
+        "order": 2
+      },
       "skipFiles": ["<node_internals>/**"]
     }
   ]

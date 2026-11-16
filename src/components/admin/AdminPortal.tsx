@@ -314,7 +314,7 @@ No further action is required from you at this time. Keep your profile check-in 
               </div>
 
               {/* SPLIT-SCREEN PANEL */}
-              <div className="grid grid-cols-1 lg:grid-cols-2 divide-y lg:divide-y-0 lg:divide-x divide-neutral-800 min-h-[500px]">
+              <div className="grid grid-cols-1 lg:grid-cols-2 divide-y lg:divide-y-0 lg:divide-x divide-neutral-800 min-h-125">
                 {/* LEFT PANE: OCR-Extracted Data & Field Validation */}
                 <div className="p-6 space-y-5 bg-neutral-900/60">
                   <div className="flex items-center justify-between">
@@ -452,7 +452,7 @@ No further action is required from you at this time. Keep your profile check-in 
                   </div>
 
                   {/* Document Container */}
-                  <div className="flex-1 min-h-[380px] rounded-xl border border-neutral-800 bg-neutral-950 overflow-hidden relative flex items-center justify-center p-4">
+                  <div className="flex-1 min-h-95 rounded-xl border border-neutral-800 bg-neutral-950 overflow-hidden relative flex items-center justify-center p-4">
                     <div
                       className="transition-transform duration-200 ease-out origin-center"
                       style={{ transform: `scale(${zoomLevel})` }}
@@ -461,7 +461,7 @@ No further action is required from you at this time. Keep your profile check-in 
                         src={selectedCandidate.credentialDocumentUrl}
                         alt="Candidate official academic diploma"
                         referrerPolicy="no-referrer"
-                        className="max-h-[360px] object-contain rounded-lg shadow-2xl border border-neutral-800"
+                        className="max-h-90 object-contain rounded-lg shadow-2xl border border-neutral-800"
                       />
                     </div>
                   </div>

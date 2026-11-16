@@ -649,7 +649,7 @@ export const CandidateDashboard: React.FC<CandidateDashboardProps> = ({ onOpenOn
         </div>
 
         {/* Quick Stats Box */}
-        <div className="grid grid-cols-2 gap-3 min-w-[220px] p-3 rounded-xl bg-neutral-950/60 border border-neutral-800">
+        <div className="grid grid-cols-2 gap-3 min-w-55 p-3 rounded-xl bg-neutral-950/60 border border-neutral-800">
           <div className="p-2">
             <div className="text-[11px] text-neutral-500 font-medium">Invites Received</div>
             <div className="text-xl font-bold text-white font-mono tabular-nums">
