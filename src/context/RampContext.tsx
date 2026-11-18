@@ -626,6 +626,8 @@ export const RampProvider: React.FC<{ children: React.ReactNode }> = ({ children
       email: data.email || 'candidate@example.com',
       phone: data.phone || '',
       showPhone: data.showPhone ?? false,
+      address: data.address || '',
+      showAddress: data.showAddress ?? false,
       currentEmployer: data.currentEmployer || '',
       showCurrentEmployer: data.showCurrentEmployer ?? false,
       location: data.location || 'Remote',

@@ -48,6 +48,7 @@ export const CandidateOnboardingModal: React.FC<CandidateOnboardingModalProps> =
   const [name, setName] = useState('');
   const [email, setEmail] = useState(authSession?.user.email || '');
   const [phone, setPhone] = useState('');
+  const [address, setAddress] = useState('');
   const [location, setLocation] = useState('');
   const [currentEmployer, setCurrentEmployer] = useState('');
   const [bio, setBio] = useState('');
@@ -72,6 +73,7 @@ export const CandidateOnboardingModal: React.FC<CandidateOnboardingModalProps> =
 
   // Privacy toggles
   const [showPhone, setShowPhone] = useState(false);
+  const [showAddress, setShowAddress] = useState(false);
   const [showCurrentEmployer, setShowCurrentEmployer] = useState(false);
   const [showLocation, setShowLocation] = useState(true);
   const [isSnoozed, setIsSnoozed] = useState(false);
@@ -100,6 +102,7 @@ export const CandidateOnboardingModal: React.FC<CandidateOnboardingModalProps> =
         name,
         email,
         phone,
+        address,
         location,
         currentEmployer,
         bio,
@@ -115,6 +118,7 @@ export const CandidateOnboardingModal: React.FC<CandidateOnboardingModalProps> =
         documentUrl,
         fileName,
         showPhone,
+        showAddress,
         showCurrentEmployer,
         showLocation,
         isSnoozed,
@@ -132,6 +136,7 @@ export const CandidateOnboardingModal: React.FC<CandidateOnboardingModalProps> =
     name,
     email,
     phone,
+    address,
     location,
     currentEmployer,
     bio,
@@ -147,6 +152,7 @@ export const CandidateOnboardingModal: React.FC<CandidateOnboardingModalProps> =
     documentUrl,
     fileName,
     showPhone,
+    showAddress,
     showCurrentEmployer,
     showLocation,
     isSnoozed,
@@ -163,6 +169,7 @@ export const CandidateOnboardingModal: React.FC<CandidateOnboardingModalProps> =
           if (draft.name !== undefined) setName(draft.name);
           if (draft.email !== undefined) setEmail(draft.email);
           if (draft.phone !== undefined) setPhone(draft.phone);
+          if (draft.address !== undefined) setAddress(draft.address);
           if (draft.location !== undefined) setLocation(draft.location);
           if (draft.currentEmployer !== undefined) setCurrentEmployer(draft.currentEmployer);
           if (draft.bio !== undefined) setBio(draft.bio);
@@ -181,6 +188,7 @@ export const CandidateOnboardingModal: React.FC<CandidateOnboardingModalProps> =
           if (draft.documentUrl) setDocumentUrl(draft.documentUrl);
           if (draft.fileName) setFileName(draft.fileName);
           if (draft.showPhone !== undefined) setShowPhone(draft.showPhone);
+          if (draft.showAddress !== undefined) setShowAddress(draft.showAddress);
           if (draft.showCurrentEmployer !== undefined) setShowCurrentEmployer(draft.showCurrentEmployer);
           if (draft.showLocation !== undefined) setShowLocation(draft.showLocation);
           if (draft.isSnoozed !== undefined) setIsSnoozed(draft.isSnoozed);
@@ -201,7 +209,7 @@ export const CandidateOnboardingModal: React.FC<CandidateOnboardingModalProps> =
   // Real-time debounced auto-save as candidate types
   useEffect(() => {
     if (!isDemoMode || !hasLoadedDraft || !isOpen) return;
-    if (!name && !email && !phone && !currentEmployer && !bio && !aboutMe) return;
+    if (!name && !email && !phone && !address && !currentEmployer && !bio && !aboutMe) return;
 
     const timer = setTimeout(() => {
       saveDraftNow();
@@ -212,6 +220,7 @@ export const CandidateOnboardingModal: React.FC<CandidateOnboardingModalProps> =
     name,
     email,
     phone,
+    address,
     location,
     currentEmployer,
     bio,
@@ -467,9 +476,11 @@ export const CandidateOnboardingModal: React.FC<CandidateOnboardingModalProps> =
       name,
       email,
       phone,
+      address,
       location,
       currentEmployer,
       showPhone,
+      showAddress,
       showCurrentEmployer,
       showLocation,
       isSnoozed,
@@ -661,7 +672,7 @@ export const CandidateOnboardingModal: React.FC<CandidateOnboardingModalProps> =
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-xs font-semibold text-neutral-300 mb-1.5">
-                    Direct Phone Number
+                    Direct Phone Number <span className="text-neutral-500">(Optional)</span>
                   </label>
                   <input
                     type="tel"
@@ -675,7 +686,23 @@ export const CandidateOnboardingModal: React.FC<CandidateOnboardingModalProps> =
 
                 <div>
                   <label className="block text-xs font-semibold text-neutral-300 mb-1.5">
-                    Location / Metro Area
+                    Address <span className="text-neutral-500">(Optional)</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={address}
+                    onChange={(e) => setAddress(e.target.value)}
+                    onBlur={saveDraftNow}
+                    placeholder="Street, city, province, postal code"
+                    className="w-full px-3 py-2 text-xs bg-neutral-950 border border-neutral-800 rounded-lg text-white placeholder-neutral-500 focus:outline-none focus:border-emerald-500"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <div>
+                  <label className="block text-xs font-semibold text-neutral-300 mb-1.5">
+                    Location / Metro Area <span className="text-neutral-500">(Optional)</span>
                   </label>
                   <input
                     type="text"
@@ -1060,6 +1087,23 @@ export const CandidateOnboardingModal: React.FC<CandidateOnboardingModalProps> =
                     className="p-1 text-neutral-400 hover:text-white"
                   >
                     {showPhone ? <Eye className="w-4 h-4 text-emerald-400" /> : <EyeOff className="w-4 h-4" />}
+                  </button>
+                </div>
+
+                <div className="flex items-center justify-between text-xs">
+                  <div>
+                    <div className="text-neutral-300 font-medium">Show Address</div>
+                    <div className="text-[11px] text-neutral-500">Optional full address for employer visibility</div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowAddress(!showAddress);
+                      setTimeout(saveDraftNow, 50);
+                    }}
+                    className="p-1 text-neutral-400 hover:text-white"
+                  >
+                    {showAddress ? <Eye className="w-4 h-4 text-emerald-400" /> : <EyeOff className="w-4 h-4" />}
                   </button>
                 </div>
 

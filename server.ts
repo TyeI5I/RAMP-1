@@ -961,6 +961,7 @@ async function startServer() {
       id: record.user_id,
       email: includeContact ? profile.email || '' : '',
       phone: includeContact || profile.showPhone === true ? profile.phone : '',
+      address: profile.showAddress === true ? profile.address || '' : '',
       currentEmployer: profile.showCurrentEmployer === false ? '' : profile.currentEmployer,
       location: profile.showLocation === false ? 'Not disclosed' : profile.location,
       credentialDocumentUrl: includeContact ? profile.credentialDocumentUrl || '' : '',

@@ -111,6 +111,8 @@ export interface CandidateProfile {
   email: string; // Mandatory & always visible to verified employers
   phone?: string;
   showPhone: boolean; // Privacy toggle
+  address?: string;
+  showAddress?: boolean; // Optional privacy toggle
   currentEmployer?: string;
   showCurrentEmployer: boolean; // Privacy toggle
   location: string;

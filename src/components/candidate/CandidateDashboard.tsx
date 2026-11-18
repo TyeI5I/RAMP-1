@@ -1646,6 +1646,27 @@ export const CandidateDashboard: React.FC<CandidateDashboardProps> = ({ onOpenOn
               </button>
             </div>
 
+            {/* Address Privacy */}
+            <div className="pt-4 flex items-center justify-between">
+              <div>
+                <div className="font-semibold text-neutral-200">Address Visibility</div>
+                <div className="text-neutral-500 text-[11px]">
+                  Your full address is optional and hidden unless you choose to share it.
+                </div>
+              </div>
+              <button
+                onClick={() => updateCandidateProfile({ showAddress: !currentCandidate.showAddress })}
+                className={`px-3 py-1.5 rounded-lg border transition-colors flex items-center gap-1.5 font-medium ${
+                  currentCandidate.showAddress
+                    ? 'bg-neutral-800 text-white border-neutral-700'
+                    : 'bg-neutral-950 text-neutral-500 border-neutral-800'
+                }`}
+              >
+                {currentCandidate.showAddress ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
+                {currentCandidate.showAddress ? 'Visible' : 'Hidden'}
+              </button>
+            </div>
+
             {/* Current Employer Privacy */}
             <div className="pt-4 flex items-center justify-between">
               <div>
