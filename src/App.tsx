@@ -71,7 +71,6 @@ const AppContent: React.FC = () => {
       )}
       {/* Top Navbar */}
       <Navbar
-        activeTab={activeTab}
         setActiveTab={setActiveTab}
         onOpenNotifications={() => setIsNotificationsOpen(true)}
         onOpenEmails={() => setIsEmailsOpen(true)}

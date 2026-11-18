@@ -45,8 +45,6 @@ export const CandidateDashboard: React.FC<CandidateDashboardProps> = ({ onOpenOn
     isDemoMode,
     refreshMarketplace,
     startPersonaVerification,
-    candidates,
-    setCurrentCandidateId,
     checkInCandidate,
     updateCandidateProfile,
     jobInvites,
@@ -379,33 +377,14 @@ export const CandidateDashboard: React.FC<CandidateDashboardProps> = ({ onOpenOn
 
   return (
     <div className="space-y-6">
-      {/* Candidate Persona Quick Switcher (Testing Bar) */}
-      <div className="flex flex-wrap items-center justify-between gap-3 p-3 bg-neutral-900/70 border border-neutral-800 rounded-xl text-xs">
-        <div className="flex items-center gap-2 text-neutral-400">
-          <span className="font-semibold text-neutral-200">Candidate Switcher:</span>
-          <span>Test different candidate accounts:</span>
-        </div>
-        <div className="flex flex-wrap items-center gap-1.5">
-          {candidates.slice(0, 5).map((cand) => (
-            <button
-              key={cand.id}
-              onClick={() => setCurrentCandidateId(cand.id)}
-              className={`px-2.5 py-1 rounded-md transition-colors ${
-                currentCandidate.id === cand.id
-                  ? 'bg-neutral-800 text-emerald-400 font-semibold border border-emerald-500/30'
-                  : 'text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800/40'
-              }`}
-            >
-              {cand.name.split(' ')[0]} ({cand.simulatedDaysInactive}d)
-            </button>
-          ))}
-          <button
-            onClick={onOpenOnboarding}
-            className="px-2.5 py-1 rounded-md bg-emerald-600/20 text-emerald-300 hover:bg-emerald-600/30 border border-emerald-500/30 font-medium"
-          >
-            + New Signup
-          </button>
-        </div>
+      <div className="flex justify-end">
+        <button
+          type="button"
+          onClick={onOpenOnboarding}
+          className="px-3 py-1.5 rounded-lg border border-neutral-700 bg-neutral-900 text-xs font-medium text-neutral-300 hover:bg-neutral-800"
+        >
+          Edit Candidate Profile
+        </button>
       </div>
 
       {/* Strict 14/30 Inactivity Lifecycle Banner */}

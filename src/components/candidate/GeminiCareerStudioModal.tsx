@@ -14,7 +14,10 @@ import {
   ArrowRight,
   HelpCircle,
   Lightbulb,
+  Mic,
+  MicOff,
 } from 'lucide-react';
+import { useGeminiVoice } from '../../hooks/useGeminiVoice';
 
 interface Message {
   id: string;
@@ -45,6 +48,15 @@ export const GeminiCareerStudioModal: React.FC<GeminiCareerStudioModalProps> = (
   const [isLoading, setIsLoading] = useState(false);
   const [appliedField, setAppliedField] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const {
+    voiceMode,
+    isListening,
+    isSpeaking,
+    voiceError,
+    enableVoiceMode,
+    disableVoiceMode,
+    speakReply,
+  } = useGeminiVoice();
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -77,6 +89,10 @@ How can I help you stand out to verified recruiters today?
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, isLoading]);
+
+  useEffect(() => {
+    if (!isOpen && voiceMode) disableVoiceMode();
+  }, [disableVoiceMode, isOpen, voiceMode]);
 
   if (!isOpen || !currentCandidate) return null;
 
@@ -144,6 +160,7 @@ How can I help you stand out to verified recruiters today?
       };
 
       setMessages((prev) => [...prev, modelMsg]);
+      speakReply(data.text);
     } catch (err) {
       console.error('Failed to send message to Gemini API:', err);
       const errorMessage = err instanceof Error ? err.message : 'Unknown error';
@@ -154,10 +171,21 @@ How can I help you stand out to verified recruiters today?
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         isError: true,
       };
+
       setMessages((prev) => [...prev, errorReply]);
     } finally {
       setIsLoading(false);
     }
+  };
+
+  const toggleVoiceMode = () => {
+    if (voiceMode) {
+      disableVoiceMode();
+      return;
+    }
+    enableVoiceMode((transcript) => {
+      void sendMessage(transcript, mode);
+    });
   };
 
   const handleQuickPrompt = (promptType: 'resume' | 'cover_letter' | 'about_me') => {
@@ -443,6 +471,20 @@ How can I help you stand out to verified recruiters today?
               className="flex-1 px-4 py-2.5 text-xs bg-neutral-900 border border-neutral-800 rounded-xl text-white placeholder-neutral-500 focus:outline-none focus:border-emerald-500 transition-colors"
             />
             <button
+              type="button"
+              onClick={toggleVoiceMode}
+              aria-pressed={voiceMode}
+              title={voiceMode ? 'Turn voice mode off' : 'Start voice conversation with Gemini'}
+              className={`p-2.5 rounded-xl border transition-colors ${
+                voiceMode
+                  ? 'bg-emerald-500 text-neutral-950 border-emerald-400'
+                  : 'bg-neutral-900 text-neutral-300 border-neutral-800 hover:text-white'
+              }`}
+            >
+              {voiceMode ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
+              <span className="sr-only">{voiceMode ? 'Turn voice mode off' : 'Start voice mode'}</span>
+            </button>
+            <button
               type="submit"
               disabled={!input.trim() || isLoading}
               className="px-4 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-neutral-950 font-bold text-xs transition-colors flex items-center gap-1.5 disabled:opacity-50 shadow-md shadow-emerald-500/10"
@@ -451,6 +493,13 @@ How can I help you stand out to verified recruiters today?
               <span className="hidden sm:inline">Send</span>
             </button>
           </form>
+
+          {voiceMode && (
+            <p className="text-[11px] text-emerald-300" role="status">
+              {isListening ? 'Listening…' : isSpeaking ? 'Gemini is speaking…' : isLoading ? 'Gemini is thinking…' : 'Voice mode is on.'}
+            </p>
+          )}
+          {voiceError && <p className="text-[11px] text-red-300" role="alert">{voiceError}</p>}
 
           <div className="flex items-center justify-between text-[11px] text-neutral-500 font-mono">
             <span>Powered by @google/genai SDK · Server-side processing</span>

@@ -48,7 +48,10 @@ import {
   CalendarDays,
   Columns,
   MessageSquare,
+  Mic,
+  MicOff,
 } from 'lucide-react';
+import { useGeminiVoice } from '../../hooks/useGeminiVoice';
 
 interface EmployerChatMessage {
   id: string;
@@ -86,6 +89,12 @@ export const EmployerSearchPortal: React.FC = () => {
     location: '',
     minimumYearsExperience: null,
   });
+  const [criteriaText, setCriteriaText] = useState({
+    roles: '',
+    degrees: '',
+    institutions: '',
+    skills: '',
+  });
   const [searchCandidates, setSearchCandidates] = useState<CandidateProfile[]>([]);
   const [searchSaved, setSearchSaved] = useState(false);
   const [isSavingSearch, setIsSavingSearch] = useState(false);
@@ -95,6 +104,15 @@ export const EmployerSearchPortal: React.FC = () => {
   const [isEmployerChatOpen, setIsEmployerChatOpen] = useState(false);
   const [employerChatInput, setEmployerChatInput] = useState('');
   const [isEmployerChatLoading, setIsEmployerChatLoading] = useState(false);
+  const {
+    voiceMode: employerVoiceMode,
+    isListening: isEmployerListening,
+    isSpeaking: isEmployerSpeaking,
+    voiceError: employerVoiceError,
+    enableVoiceMode: enableEmployerVoiceMode,
+    disableVoiceMode: disableEmployerVoiceMode,
+    speakReply: speakEmployerReply,
+  } = useGeminiVoice();
   const [employerChatMessages, setEmployerChatMessages] = useState<EmployerChatMessage[]>([
     {
       id: 'employer-chat-welcome',
@@ -102,6 +120,10 @@ export const EmployerSearchPortal: React.FC = () => {
       content: 'Hi! I can answer questions about RAMPED or help you phrase exact role, degree, institution, and skill requirements for candidate search.',
     },
   ]);
+
+  useEffect(() => {
+    if (!isEmployerChatOpen && employerVoiceMode) disableEmployerVoiceMode();
+  }, [disableEmployerVoiceMode, employerVoiceMode, isEmployerChatOpen]);
   const [teamSeats, setTeamSeats] = useState<Array<{ member_email: string; seat_role: string; status: string }>>([]);
   const [teamInviteEmail, setTeamInviteEmail] = useState('');
   const [teamError, setTeamError] = useState<string | null>(null);
@@ -146,6 +168,12 @@ export const EmployerSearchPortal: React.FC = () => {
   useEffect(() => {
     if (currentEmployer?.savedSearchCriteria) {
       setSearchCriteria(currentEmployer.savedSearchCriteria);
+      setCriteriaText({
+        roles: currentEmployer.savedSearchCriteria.roles.join(', '),
+        degrees: currentEmployer.savedSearchCriteria.degrees.join(', '),
+        institutions: currentEmployer.savedSearchCriteria.institutions.join(', '),
+        skills: currentEmployer.savedSearchCriteria.skills.join(', '),
+      });
       setSearchSaved(true);
     }
   }, [currentEmployer?.id, currentEmployer?.savedSearchCriteria]);
@@ -263,6 +291,7 @@ export const EmployerSearchPortal: React.FC = () => {
   };
 
   const setCriteriaList = (field: 'roles' | 'degrees' | 'institutions' | 'skills', value: string) => {
+    setCriteriaText((previous) => ({ ...previous, [field]: value }));
     setSearchCriteria((previous) => ({
       ...previous,
       [field]: value.split(',').map((item) => item.trim()).filter(Boolean),
@@ -270,8 +299,8 @@ export const EmployerSearchPortal: React.FC = () => {
     setSearchSaved(false);
   };
 
-  const sendEmployerChatMessage = async () => {
-    const text = employerChatInput.trim();
+  const sendEmployerChatMessage = async (voiceText?: string) => {
+    const text = (voiceText ?? employerChatInput).trim();
     if (!text || isEmployerChatLoading) return;
 
     const userMessage: EmployerChatMessage = {
@@ -301,6 +330,7 @@ export const EmployerSearchPortal: React.FC = () => {
         ...previous,
         { id: `employer-model-${Date.now()}`, role: 'model', content: data.text },
       ]);
+      speakEmployerReply(data.text);
     } catch (err) {
       console.error('Employer assistant failed:', err);
       setEmployerChatMessages((previous) => [
@@ -315,6 +345,16 @@ export const EmployerSearchPortal: React.FC = () => {
     } finally {
       setIsEmployerChatLoading(false);
     }
+  };
+
+  const toggleEmployerVoiceMode = () => {
+    if (employerVoiceMode) {
+      disableEmployerVoiceMode();
+      return;
+    }
+    enableEmployerVoiceMode((transcript) => {
+      void sendEmployerChatMessage(transcript);
+    });
   };
 
   const handleClearGeminiSearch = () => {
@@ -707,7 +747,7 @@ export const EmployerSearchPortal: React.FC = () => {
                   Role or title
                 <input
                   type="text"
-                    value={searchCriteria.roles.join(', ')}
+                    value={criteriaText.roles}
                     onChange={(event) => setCriteriaList('roles', event.target.value)}
                     placeholder="Exact role or category"
                     className="mt-1 w-full px-3 py-2 text-xs bg-neutral-950 border border-neutral-800 rounded-xl text-white placeholder-neutral-500 focus:outline-none focus:border-emerald-500"
@@ -715,7 +755,7 @@ export const EmployerSearchPortal: React.FC = () => {
                 </label>
                 <label className="text-[11px] font-semibold text-neutral-300">
                   Required skills <span className="font-normal text-neutral-500">(comma-separated, all required)</span>
-                  <input value={searchCriteria.skills.join(', ')} onChange={(event) => setCriteriaList('skills', event.target.value)} placeholder="Python, SQL" className="mt-1 w-full px-3 py-2 text-xs bg-neutral-950 border border-neutral-800 rounded-xl text-white placeholder-neutral-500 focus:outline-none focus:border-emerald-500" />
+                  <input value={criteriaText.skills} onChange={(event) => setCriteriaList('skills', event.target.value)} placeholder="Python, SQL" className="mt-1 w-full px-3 py-2 text-xs bg-neutral-950 border border-neutral-800 rounded-xl text-white placeholder-neutral-500 focus:outline-none focus:border-emerald-500" />
                 </label>
                 <label className="text-[11px] font-semibold text-neutral-300">
                   Minimum years of experience
@@ -727,11 +767,11 @@ export const EmployerSearchPortal: React.FC = () => {
                 </label>
                 <label className="text-[11px] font-semibold text-neutral-300">
                   Exact degree(s) <span className="font-normal text-neutral-500">(comma-separated)</span>
-                  <input value={searchCriteria.degrees.join(', ')} onChange={(event) => setCriteriaList('degrees', event.target.value)} placeholder="Bachelor's Degree" className="mt-1 w-full px-3 py-2 text-xs bg-neutral-950 border border-neutral-800 rounded-xl text-white placeholder-neutral-500 focus:outline-none focus:border-emerald-500" />
+                  <input value={criteriaText.degrees} onChange={(event) => setCriteriaList('degrees', event.target.value)} placeholder="Bachelor's Degree" className="mt-1 w-full px-3 py-2 text-xs bg-neutral-950 border border-neutral-800 rounded-xl text-white placeholder-neutral-500 focus:outline-none focus:border-emerald-500" />
                 </label>
                 <label className="text-[11px] font-semibold text-neutral-300">
                   Institution(s) <span className="font-normal text-neutral-500">(optional, exact)</span>
-                  <input value={searchCriteria.institutions.join(', ')} onChange={(event) => setCriteriaList('institutions', event.target.value)} placeholder="University name" className="mt-1 w-full px-3 py-2 text-xs bg-neutral-950 border border-neutral-800 rounded-xl text-white placeholder-neutral-500 focus:outline-none focus:border-emerald-500" />
+                  <input value={criteriaText.institutions} onChange={(event) => setCriteriaList('institutions', event.target.value)} placeholder="University name" className="mt-1 w-full px-3 py-2 text-xs bg-neutral-950 border border-neutral-800 rounded-xl text-white placeholder-neutral-500 focus:outline-none focus:border-emerald-500" />
                 </label>
               </div>
               <div className="flex flex-wrap items-center gap-2">
@@ -800,6 +840,20 @@ export const EmployerSearchPortal: React.FC = () => {
                     className="flex-1 min-w-0 px-3 py-2 text-xs bg-neutral-950 border border-neutral-800 rounded-lg text-white placeholder-neutral-500 focus:outline-none focus:border-emerald-500"
                   />
                   <button
+                    type="button"
+                    onClick={toggleEmployerVoiceMode}
+                    aria-pressed={employerVoiceMode}
+                    title={employerVoiceMode ? 'Turn voice mode off' : 'Start voice conversation with Gemini'}
+                    className={`p-2 rounded-lg border transition-colors ${
+                      employerVoiceMode
+                        ? 'bg-emerald-500 text-neutral-950 border-emerald-400'
+                        : 'bg-neutral-950 text-neutral-300 border-neutral-800 hover:text-white'
+                    }`}
+                  >
+                    {employerVoiceMode ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
+                    <span className="sr-only">{employerVoiceMode ? 'Turn voice mode off' : 'Start voice mode'}</span>
+                  </button>
+                  <button
                     type="submit"
                     disabled={!employerChatInput.trim() || isEmployerChatLoading}
                     className="px-3 py-2 rounded-lg bg-emerald-500 text-neutral-950 font-bold text-xs disabled:opacity-50"
@@ -807,6 +861,14 @@ export const EmployerSearchPortal: React.FC = () => {
                     <Send className="w-3.5 h-3.5" />
                   </button>
                 </form>
+                {employerVoiceMode && (
+                  <p className="px-3 pb-2 text-[11px] text-emerald-300" role="status">
+                    {isEmployerListening ? 'Listening…' : isEmployerSpeaking ? 'Gemini is speaking…' : isEmployerChatLoading ? 'Gemini is thinking…' : 'Voice mode is on.'}
+                  </p>
+                )}
+                {employerVoiceError && (
+                  <p className="px-3 pb-2 text-[11px] text-red-300" role="alert">{employerVoiceError}</p>
+                )}
               </div>
             )}
           </div>

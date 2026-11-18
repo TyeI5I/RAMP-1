@@ -7,7 +7,6 @@ export const EmployerVerificationGate: React.FC = () => {
     currentEmployer,
     registerEmployer,
     updateEmployerProfile,
-    setCurrentRole,
     isDemoMode,
     authSession,
     refreshMarketplace,
@@ -230,15 +229,7 @@ export const EmployerVerificationGate: React.FC = () => {
           </div>
         </div>
 
-        <div className="pt-4 flex items-center justify-between">
-          {isDemoMode && <button
-            type="button"
-            onClick={() => setCurrentRole('admin')}
-            className="text-xs text-neutral-400 hover:text-white underline underline-offset-4"
-          >
-            Switch to Admin View to Approve Employers
-          </button>}
-
+        <div className="pt-4 flex justify-end">
           <button
             type="submit"
             className="px-6 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-neutral-950 font-bold text-xs transition-colors flex items-center gap-2 shadow-lg shadow-amber-500/10"
