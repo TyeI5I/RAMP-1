@@ -7,6 +7,9 @@ export interface ExactCredentialCriteria {
   minimumYearsExperience: number | null;
 }
 
+export const parseExactCriteriaList = (value: string) =>
+  value.split(',').filter((item) => item.trim().length > 0);
+
 export const isExactCredentialCriteria = (value: unknown): value is ExactCredentialCriteria => {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
   const criteria = value as Record<string, unknown>;

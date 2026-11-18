@@ -472,37 +472,43 @@ export const CandidateDashboard: React.FC<CandidateDashboardProps> = ({ onOpenOn
         </div>
       </div>
 
-      {!isDemoMode && (
-        <section className="p-5 bg-neutral-900 border border-neutral-800 rounded-2xl flex flex-col md:flex-row md:items-center justify-between gap-4">
-          <div className="space-y-1">
-            <div className="flex items-center gap-2 text-sm font-bold text-white">
-              <ShieldCheck className="w-4 h-4 text-emerald-400" />
-              Identity verification
-              <span className="text-[11px] font-medium text-neutral-400 capitalize">
-                {currentCandidate.identityVerificationStatus || 'not started'}
-              </span>
-            </div>
-            <p className="text-xs text-neutral-400 max-w-2xl">
-              Verify your government ID securely with Persona. This is separate from academic credential review; RAMPED does not store your ID images.
-              {currentCandidate.identityVerificationStatus === 'needs_review' &&
-                ' Your result needs human review; contact support if you need help.'}
-            </p>
-            {currentCandidate.identityVerificationStatus !== 'verified' &&
-              currentCandidate.identityVerificationStatus !== 'needs_review' && (
-                <label className="flex items-start gap-2 text-[11px] text-neutral-400 max-w-2xl">
-                  <input
-                    type="checkbox"
-                    checked={hasIdentityConsent}
-                    onChange={(event) => setHasIdentityConsent(event.target.checked)}
-                    className="mt-0.5 accent-emerald-500"
-                  />
-                  <span>
-                    I consent to sharing the information requested in Persona's flow for identity verification. Persona processes my ID; RAMPED stores the result and inquiry reference, not the ID images.
-                  </span>
-                </label>
-              )}
-            {identityCheckError && <p role="alert" className="text-xs text-red-300">{identityCheckError}</p>}
+      <section className="p-5 bg-neutral-900 border border-neutral-800 rounded-2xl flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div className="space-y-1">
+          <div className="flex items-center gap-2 text-sm font-bold text-white">
+            <ShieldCheck className="w-4 h-4 text-emerald-400" />
+            Identity verification
+            <span className="text-[11px] font-medium text-neutral-400 capitalize">
+              {currentCandidate.identityVerificationStatus || 'not started'}
+            </span>
           </div>
+          <p className="text-xs text-neutral-400 max-w-2xl">
+            Verify your government ID securely with Persona. This is separate from academic credential review; RAMPED does not store your ID images. Your uploaded academic credential is reviewed separately by RAMPED.
+            {currentCandidate.identityVerificationStatus === 'needs_review' &&
+              ' Your result needs human review; contact support if you need help.'}
+          </p>
+          {isDemoMode && (
+            <p className="text-[11px] text-neutral-400">
+              Live Persona identity checks are available in the deployed app, not demo mode.
+            </p>
+          )}
+          {!isDemoMode &&
+            currentCandidate.identityVerificationStatus !== 'verified' &&
+            currentCandidate.identityVerificationStatus !== 'needs_review' && (
+              <label className="flex items-start gap-2 text-[11px] text-neutral-400 max-w-2xl">
+                <input
+                  type="checkbox"
+                  checked={hasIdentityConsent}
+                  onChange={(event) => setHasIdentityConsent(event.target.checked)}
+                  className="mt-0.5 accent-emerald-500"
+                />
+                <span>
+                  I consent to sharing the information requested in Persona's flow for identity verification. Persona processes my ID; RAMPED stores the result and inquiry reference, not the ID images.
+                </span>
+              </label>
+            )}
+          {identityCheckError && <p role="alert" className="text-xs text-red-300">{identityCheckError}</p>}
+        </div>
+        {!isDemoMode && (
           <div className="flex gap-2 shrink-0">
             <button
               type="button"
@@ -525,8 +531,8 @@ export const CandidateDashboard: React.FC<CandidateDashboardProps> = ({ onOpenOn
                 </button>
               )}
           </div>
-        </section>
-      )}
+        )}
+      </section>
 
       {/* Snooze / Confidential Visibility Banner */}
       {currentCandidate.isSnoozed && (

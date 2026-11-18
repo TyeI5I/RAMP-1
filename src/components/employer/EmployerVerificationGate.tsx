@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { useRamp } from '../../context/RampContext';
-import { ShieldAlert, Building2, Clock } from 'lucide-react';
+import { ShieldAlert, Building2, Clock, CreditCard } from 'lucide-react';
+import { StripeSubscriptionModal } from './StripeSubscriptionModal';
 
 export const EmployerVerificationGate: React.FC = () => {
   const {
@@ -22,6 +23,7 @@ export const EmployerVerificationGate: React.FC = () => {
   const [isStartingVerification, setIsStartingVerification] = useState(false);
   const [verificationError, setVerificationError] = useState<string | null>(null);
   const [hasBusinessConsent, setHasBusinessConsent] = useState(false);
+  const [isStripeModalOpen, setIsStripeModalOpen] = useState(false);
   const isManualReview = currentEmployer?.businessVerificationStatus === 'needs_review';
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -76,6 +78,9 @@ export const EmployerVerificationGate: React.FC = () => {
           <h2 className="text-xl font-bold text-white tracking-tight">Employer Verification Gate</h2>
           <p className="text-xs text-neutral-400">
             RAMPED protects passive candidates. All hiring entities must pass corporate business verification before accessing candidate search.
+          </p>
+          <p className="text-[11px] text-neutral-500">
+            Complete your business profile, verify with Persona, then choose a plan. Candidate search remains locked until the employer is approved and the subscription is active.
           </p>
         </div>
       </div>
@@ -230,6 +235,16 @@ export const EmployerVerificationGate: React.FC = () => {
         </div>
 
         <div className="pt-4 flex justify-end">
+          {currentEmployer && !isDemoMode && (
+            <button
+              type="button"
+              onClick={() => setIsStripeModalOpen(true)}
+              className="mr-auto flex items-center gap-2 rounded-xl border border-neutral-700 bg-neutral-800 px-4 py-2.5 text-xs font-semibold text-neutral-200 transition-colors hover:bg-neutral-700"
+            >
+              <CreditCard className="h-4 w-4" />
+              Plans & payment
+            </button>
+          )}
           <button
             type="submit"
             className="px-6 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-neutral-950 font-bold text-xs transition-colors flex items-center gap-2 shadow-lg shadow-amber-500/10"
@@ -239,6 +254,12 @@ export const EmployerVerificationGate: React.FC = () => {
           </button>
         </div>
       </form>
+
+      <StripeSubscriptionModal
+        isOpen={isStripeModalOpen}
+        defaultTier={currentEmployer?.subscriptionTier || 'none'}
+        onClose={() => setIsStripeModalOpen(false)}
+      />
     </div>
   );
 };

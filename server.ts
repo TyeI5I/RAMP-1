@@ -26,6 +26,19 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 
 async function startServer() {
   const app = express();
+  app.disable('x-powered-by');
+  app.use((req, res, next) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+    res.setHeader('Permissions-Policy', 'camera=(), geolocation=(), microphone=(self)');
+    if (req.path.startsWith('/api/')) res.setHeader('Cache-Control', 'no-store');
+    if (process.env.NODE_ENV === 'production') {
+      res.setHeader('Strict-Transport-Security', 'max-age=31536000');
+    }
+    next();
+  });
+
   const PORT = process.env.PORT || 3000;
   const stripe = process.env.STRIPE_SECRET_KEY
     ? new Stripe(process.env.STRIPE_SECRET_KEY)
@@ -603,7 +616,12 @@ async function startServer() {
       }
 
       const user = res.locals.authUser as User;
-      const { companyName, tier, cadence, alertCategories = [] } = req.body;
+      if (!(await requireEmployerBillingProfile(user, res))) return;
+      const { tier, cadence, alertCategories = [] } = req.body;
+      const employerProfile = res.locals.employerBillingProfile as {
+        profile: Record<string, unknown>;
+      };
+      const companyName = employerProfile.profile.companyName;
       if (
         typeof companyName !== 'string' ||
         !companyName.trim() ||
@@ -708,6 +726,7 @@ async function startServer() {
         return res.status(503).json({ error: 'Billing is not configured on this server.' });
       }
       const user = res.locals.authUser as User;
+      if (!(await requireEmployerBillingProfile(user, res))) return;
 
       const sessionId = req.query.session_id;
       if (typeof sessionId !== 'string' || !sessionId.startsWith('cs_')) {
@@ -780,6 +799,7 @@ async function startServer() {
     }
     try {
       const user = res.locals.authUser as User;
+      if (!(await requireEmployerBillingProfile(user, res))) return;
       const { data: account, error } = await supabaseAdmin
         .from('billing_accounts')
         .select('company_name,billing_email,stripe_customer_id,stripe_subscription_id,subscription_status,subscription_tier,subscription_cadence,current_period_end,alert_categories')
@@ -815,6 +835,7 @@ async function startServer() {
     }
     try {
       const user = res.locals.authUser as User;
+      if (!(await requireEmployerBillingProfile(user, res))) return;
       const { data: account, error } = await supabaseAdmin
         .from('billing_accounts')
         .select('stripe_customer_id')
@@ -1165,6 +1186,25 @@ async function startServer() {
       res.status(403).json({ error: 'Verify your email address before creating a marketplace profile.' });
       return false;
     }
+    return true;
+  };
+  const requireEmployerBillingProfile = async (user: User, res: express.Response) => {
+    if (!isBetaAllowed(user)) {
+      res.status(403).json({ error: 'This account is not on the private beta access list.' });
+      return false;
+    }
+    if (!requireConfirmedEmail(user, res)) return false;
+    const profile = await getMarketplaceProfile(user);
+    if (
+      !profile ||
+      profile.role !== 'employer' ||
+      typeof profile.profile?.companyName !== 'string' ||
+      !profile.profile.companyName.trim()
+    ) {
+      res.status(403).json({ error: 'Complete an employer business profile before managing billing.' });
+      return false;
+    }
+    res.locals.employerBillingProfile = profile;
     return true;
   };
 

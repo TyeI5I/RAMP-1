@@ -3,6 +3,7 @@ import { useRamp } from '../../context/RampContext';
 import { AccountDataControls } from '../auth/AccountDataControls';
 import {
   Bell,
+  ChevronDown,
   Smartphone,
   Monitor,
   Mail,
@@ -24,6 +25,7 @@ export const Navbar: React.FC<NavbarProps> = ({
     authSession,
     signOut,
     currentRole,
+    setCurrentRole,
     unreadNotificationCount,
     emailLogs,
     mobilePreviewMode,
@@ -31,6 +33,13 @@ export const Navbar: React.FC<NavbarProps> = ({
   } = useRamp();
 
   const [authActionError, setAuthActionError] = useState<string | null>(null);
+  const [isRoleMenuOpen, setIsRoleMenuOpen] = useState(false);
+
+  const selectRole = (role: 'admin' | 'employer' | 'candidate') => {
+    setCurrentRole(role);
+    setActiveTab(role === 'candidate' ? 'candidate' : role === 'admin' ? 'admin' : 'search');
+    setIsRoleMenuOpen(false);
+  };
 
   return (
     <header className="sticky top-0 z-40 w-full border-b border-neutral-800 bg-neutral-950/90 backdrop-blur-md">
@@ -57,6 +66,36 @@ export const Navbar: React.FC<NavbarProps> = ({
 
         {/* Zone 2: Account and notifications */}
         <div className="flex items-center gap-2 sm:gap-3">
+          {isDemoMode && (
+            <div className="relative">
+              <button
+                type="button"
+                aria-expanded={isRoleMenuOpen}
+                aria-haspopup="true"
+                onClick={() => setIsRoleMenuOpen((open) => !open)}
+                className="flex items-center gap-1.5 rounded-md border border-neutral-800 px-3 py-2 text-xs font-semibold text-neutral-200 hover:bg-neutral-900"
+              >
+                Admin
+                <ChevronDown className="h-3.5 w-3.5" />
+              </button>
+              {isRoleMenuOpen && (
+                <div className="absolute right-0 top-full z-50 mt-2 min-w-40 rounded-lg border border-neutral-800 bg-neutral-900 p-1 shadow-xl">
+                  {(['admin', 'employer', 'candidate'] as const).map((role) => (
+                    <button
+                      key={role}
+                      type="button"
+                      onClick={() => selectRole(role)}
+                      aria-current={currentRole === role ? 'page' : undefined}
+                      className="block w-full rounded-md px-3 py-2 text-left text-xs capitalize text-neutral-200 hover:bg-neutral-800"
+                    >
+                      {role === 'admin' ? 'Admin' : role}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Email Inbox Preview Button */}
           {isDemoMode && <button
             onClick={onOpenEmails}

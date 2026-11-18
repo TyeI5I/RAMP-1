@@ -8,7 +8,7 @@ import {
 import { EmployerVerificationGate } from './EmployerVerificationGate';
 import { StripeSubscriptionModal } from './StripeSubscriptionModal';
 import { SendInviteModal } from './SendInviteModal';
-import type { ExactCredentialCriteria } from '../../utils/exactCredentialSearch';
+import { parseExactCriteriaList, type ExactCredentialCriteria } from '../../utils/exactCredentialSearch';
 import {
   Search,
   Filter,
@@ -294,7 +294,7 @@ export const EmployerSearchPortal: React.FC = () => {
     setCriteriaText((previous) => ({ ...previous, [field]: value }));
     setSearchCriteria((previous) => ({
       ...previous,
-      [field]: value.split(',').map((item) => item.trim()).filter(Boolean),
+      [field]: parseExactCriteriaList(value),
     }));
     setSearchSaved(false);
   };

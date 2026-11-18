@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { matchesExactCredentialCriteria } from '../src/utils/exactCredentialSearch';
+import { matchesExactCredentialCriteria, parseExactCriteriaList } from '../src/utils/exactCredentialSearch';
 
 const candidate = {
   targetCategories: ['Software Engineer'],
@@ -9,6 +9,13 @@ const candidate = {
   institution: 'Stanford University',
   skills: ['Python', 'Distributed Systems'],
 };
+
+test('preserves spaces in multiword employer criteria while ignoring empty comma-separated entries', () => {
+  assert.deepEqual(parseExactCriteriaList('Walker Dentals, University of Toronto, '), [
+    'Walker Dentals',
+    ' University of Toronto',
+  ]);
+});
 
 test('matches explicit credential values exactly, ignoring case and whitespace', () => {
   assert.equal(
