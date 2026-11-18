@@ -260,7 +260,6 @@ export interface EmployerProfile {
   savedSearchCriteria?: {
     roles: string[];
     degrees: string[];
-    institutions: string[];
     skills: string[];
     location: string;
     minimumYearsExperience: number | null;

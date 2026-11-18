@@ -18,6 +18,9 @@ import {
   MicOff,
 } from 'lucide-react';
 import { useGeminiVoice } from '../../hooks/useGeminiVoice';
+import { ABOUT_ME_INTERVIEW_QUESTIONS, isSubstantiveAboutMeAnswer } from '../../utils/aboutMeInterview';
+
+type CareerStudioMode = 'resume' | 'cover_letter' | 'about_me' | 'general';
 
 interface Message {
   id: string;
@@ -32,7 +35,7 @@ interface Message {
 interface GeminiCareerStudioModalProps {
   isOpen: boolean;
   onClose: () => void;
-  initialMode?: 'resume' | 'cover_letter' | 'about_me' | 'general';
+  initialMode?: CareerStudioMode;
 }
 
 export const GeminiCareerStudioModal: React.FC<GeminiCareerStudioModalProps> = ({
@@ -48,6 +51,8 @@ export const GeminiCareerStudioModal: React.FC<GeminiCareerStudioModalProps> = (
   const [isLoading, setIsLoading] = useState(false);
   const [appliedField, setAppliedField] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [aboutMeAnswers, setAboutMeAnswers] = useState<string[]>([]);
+  const [aboutMeDraftReady, setAboutMeDraftReady] = useState(false);
   const {
     voiceMode,
     isListening,
@@ -60,12 +65,17 @@ export const GeminiCareerStudioModal: React.FC<GeminiCareerStudioModalProps> = (
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  // Initialize conversation with contextual welcome message
-  const [messages, setMessages] = useState<Message[]>([
-    {
+  const createWelcomeMessage = (welcomeMode: CareerStudioMode): Message => {
+    const firstName = currentCandidate?.name?.split(' ')[0] || 'there';
+    const aboutMeWelcome = welcomeMode === 'about_me';
+    return {
       id: 'msg-welcome',
       role: 'model',
-      content: `Hi ${currentCandidate?.name?.split(' ')[0] || 'there'}! I'm your **Gemini Career Assistant** on RAMPED.
+      content: aboutMeWelcome
+        ? `Let's build your About Me in your own voice. I'll ask a few questions first and won't invent personal details. Your profile will not change unless you choose to apply a draft.
+
+${ABOUT_ME_INTERVIEW_QUESTIONS[0]}`
+        : `Hi ${firstName}! I'm your **Gemini Career Assistant** on RAMPED.
 
 I have your verified background loaded:
 • **Degree:** ${currentCandidate?.degreeTitle || 'Bachelor of Science'} (${currentCandidate?.institution || 'University'})
@@ -77,14 +87,20 @@ How can I help you stand out to verified recruiters today?
 - **Write Cover Letter:** Draft a direct, personalized narrative for your target positions.
 - **Craft 'About Me':** Explore your story with Gemini and turn what makes you you into vivid, authentic writing.`,
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-    },
-  ]);
+      ...(aboutMeWelcome ? { taskMode: 'about_me' as const, needsInput: true } : {}),
+    };
+  };
+
+  const [messages, setMessages] = useState<Message[]>(() => [createWelcomeMessage(initialMode)]);
 
   useEffect(() => {
-    if (initialMode && initialMode !== 'general') {
-      setMode(initialMode);
-    }
-  }, [initialMode]);
+    if (!isOpen) return;
+    setMode(initialMode);
+    setMessages([createWelcomeMessage(initialMode)]);
+    setAboutMeAnswers([]);
+    setAboutMeDraftReady(false);
+    setInput('');
+  }, [initialMode, isOpen]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -160,6 +176,9 @@ How can I help you stand out to verified recruiters today?
       };
 
       setMessages((prev) => [...prev, modelMsg]);
+      if (taskMode === 'about_me' && !modelMsg.needsInput) {
+        setAboutMeDraftReady(true);
+      }
       speakReply(data.text);
     } catch (err) {
       console.error('Failed to send message to Gemini API:', err);
@@ -178,13 +197,71 @@ How can I help you stand out to verified recruiters today?
     }
   };
 
+  const startAboutMeInterview = () => {
+    setMode('about_me');
+    setAboutMeAnswers([]);
+    setAboutMeDraftReady(false);
+    setInput('');
+    setMessages([createWelcomeMessage('about_me')]);
+  };
+
+  const handleAboutMeAnswer = (answer: string) => {
+    const userMsg: Message = {
+      id: `msg-${Date.now()}`,
+      role: 'user',
+      content: answer,
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    };
+
+    if (aboutMeDraftReady) {
+      void sendMessage(answer, 'about_me');
+      return;
+    }
+
+    const nextAnswers = isSubstantiveAboutMeAnswer(answer)
+      ? [...aboutMeAnswers, answer]
+      : aboutMeAnswers;
+    setInput('');
+    setAboutMeAnswers(nextAnswers);
+
+    if (nextAnswers.length >= ABOUT_ME_INTERVIEW_QUESTIONS.length) {
+      void sendMessage(answer, 'about_me');
+      return;
+    }
+
+    const followUp = isSubstantiveAboutMeAnswer(answer)
+      ? ABOUT_ME_INTERVIEW_QUESTIONS[nextAnswers.length]
+      : `I can help, but I need details that are true for you before I draft anything. ${ABOUT_ME_INTERVIEW_QUESTIONS[nextAnswers.length]}`;
+    setMessages((previous) => [
+      ...previous,
+      userMsg,
+      {
+        id: `msg-${Date.now() + 1}`,
+        role: 'model',
+        content: followUp,
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        taskMode: 'about_me',
+        needsInput: true,
+      },
+    ]);
+  };
+
+  const submitInput = (text = input.trim()) => {
+    if (!text || isLoading) return;
+    if (mode === 'about_me') {
+      handleAboutMeAnswer(text);
+    } else {
+      void sendMessage(text, mode);
+    }
+  };
+
   const toggleVoiceMode = () => {
     if (voiceMode) {
       disableVoiceMode();
       return;
     }
     enableVoiceMode((transcript) => {
-      void sendMessage(transcript, mode);
+      submitInput(transcript);
     });
   };
 
@@ -207,12 +284,7 @@ How can I help you stand out to verified recruiters today?
         'cover_letter'
       );
     } else if (promptType === 'about_me') {
-      sendMessage(
-        `Be my imaginative, thoughtful writing partner. Help me express the fullest, most distinctive version of who I am in my own voice. Ask one thoughtful, open-ended question at a time when you need more of my perspective or examples. Once you know enough, shape what I shared into a complete, vivid, natural About Me narrative—not a generic template or a résumé summary. You may offer ideas to help me discover what I want to say, but never claim those ideas are true about me. Do not invent personal facts, values, interests, preferences, or experiences. Here is my current draft, if any: "${
-          currentCandidate.aboutMe || ''
-        }".`,
-        'about_me'
-      );
+      startAboutMeInterview();
     }
   };
 
@@ -245,6 +317,10 @@ How can I help you stand out to verified recruiters today?
   };
 
   const handleResetChat = () => {
+    if (mode === 'about_me') {
+      startAboutMeInterview();
+      return;
+    }
     setMessages([
       {
         id: `msg-${Date.now()}`,
@@ -446,7 +522,11 @@ How can I help you stand out to verified recruiters today?
               </div>
               <div className="p-3 rounded-2xl bg-neutral-950 border border-neutral-800 text-neutral-400 text-xs flex items-center gap-2">
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
-                <span>Gemini is analyzing your verified credentials and drafting recommendations...</span>
+                <span>
+                  {mode === 'about_me'
+                    ? 'Gemini is shaping a draft from the details you shared...'
+                    : 'Gemini is analyzing your verified credentials and drafting recommendations...'}
+                </span>
               </div>
             </div>
           )}
@@ -459,7 +539,7 @@ How can I help you stand out to verified recruiters today?
           <form
             onSubmit={(e) => {
               e.preventDefault();
-              sendMessage();
+              submitInput();
             }}
             className="flex items-center gap-2"
           >
@@ -467,7 +547,11 @@ How can I help you stand out to verified recruiters today?
               type="text"
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              placeholder="Ask Gemini to proofread your resume, write a cover letter, or refine your About Me..."
+              placeholder={
+                mode === 'about_me'
+                  ? 'Share your answer using details that are true for you...'
+                  : 'Ask Gemini to proofread your resume, write a cover letter, or refine your About Me...'
+              }
               className="flex-1 px-4 py-2.5 text-xs bg-neutral-900 border border-neutral-800 rounded-xl text-white placeholder-neutral-500 focus:outline-none focus:border-emerald-500 transition-colors"
             />
             <button

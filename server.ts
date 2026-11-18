@@ -15,6 +15,10 @@ import {
   matchesExactCredentialCriteria,
   type ExactCredentialCriteria,
 } from './src/utils/exactCredentialSearch';
+import {
+  getAboutMeFollowUpQuestion,
+  isSubstantiveAboutMeAnswer,
+} from './src/utils/aboutMeInterview';
 
 dotenv.config();
 
@@ -1431,6 +1435,9 @@ async function startServer() {
   app.put('/api/employer/search-criteria', ...productionActiveEmployerAccess, async (req, res) => {
     try {
       if (!supabaseAdmin) return res.status(503).json({ error: 'Marketplace storage is not configured.' });
+      if (isRecord(req.body?.criteria) && 'institutions' in req.body.criteria) {
+        return res.status(400).json({ error: 'Institution-based search criteria are not supported.' });
+      }
       if (req.body?.criteria !== null && !isExactCredentialCriteria(req.body?.criteria)) {
         return res.status(400).json({ error: 'Saved candidate search criteria are invalid.' });
       }
@@ -2001,6 +2008,15 @@ async function startServer() {
         existing.role === 'employer' &&
         submittedProfile.savedSearchCriteria !== undefined &&
         submittedProfile.savedSearchCriteria !== null &&
+        isRecord(submittedProfile.savedSearchCriteria) &&
+        'institutions' in submittedProfile.savedSearchCriteria
+      ) {
+        return res.status(400).json({ error: 'Institution-based search criteria are not supported.' });
+      }
+      if (
+        existing.role === 'employer' &&
+        submittedProfile.savedSearchCriteria !== undefined &&
+        submittedProfile.savedSearchCriteria !== null &&
         !isExactCredentialCriteria(submittedProfile.savedSearchCriteria)
       ) {
         return res.status(400).json({ error: 'Saved candidate search criteria are invalid.' });
@@ -2470,6 +2486,21 @@ async function startServer() {
         ? (res.locals.marketplaceProfile?.profile || {})
         : requestedCandidateContext;
 
+      if (taskMode === 'about_me') {
+        const substantiveAnswers = messages
+          .filter((message: { role?: string; content?: string }) => message.role === 'user')
+          .map((message: { content?: string }) => message.content || '')
+          .filter(isSubstantiveAboutMeAnswer);
+        const followUpQuestion = getAboutMeFollowUpQuestion(substantiveAnswers.length);
+        if (followUpQuestion) {
+          return res.json({
+            text: followUpQuestion,
+            modelUsed: 'guided-interview',
+            needsInput: true,
+          });
+        }
+      }
+
       const systemInstruction = `You are Gemini Career Studio for RAMPED (Recruiter & Applicant Matching Platform for Employment and Discovery).
 Your mission is to empower passive talent who hold verified academic credentials. Be a creative, perceptive partner who helps candidates express themselves clearly and fully.
 RESUME SAFETY RULE: Never invent, add, remove, or change a candidate's facts, qualifications, employers, dates, achievements, or metrics. When asked to work on a resume, make only spelling, grammar, punctuation, capitalization, and formatting corrections. Do not rewrite or paraphrase. If the candidate has not provided resume text, ask them to paste it; do not generate a sample resume or bullets. Return only the corrected supplied text, without an introduction or extra suggestions.
@@ -2478,6 +2509,7 @@ You MUST recognize which document format the candidate is asking for and strictl
 CRITICAL FORMAT SPECIFICATIONS & RULES:
 
 1. AUTHENTIC "ABOUT ME" SECTIONS (Personal Narrative):
+   - In About Me mode, do not draft until the candidate has provided substantive personal details in at least three separate answers. Until then, ask exactly one interview question at a time. A request to write an About Me is not personal detail.
    - Your role is to be a creative, perceptive writing partner who helps the candidate express their full, distinctive self—not merely proofread or compress what they wrote. Actively help them discover what they want to say; do not make them do all the writing alone.
    - FORMAT: When there is enough material, shape it into a complete, engaging first-person narrative, usually 2 to 3 fluid paragraphs (about 150-250 words, or longer when the candidate asks). Develop the candidate's meaning fully; do not make the result feel like a short template or checklist.
    - CONTENT: Draw out the candidate's actual perspective, motivations, values, collaboration style, curiosity, defining moments, interests, and hopes. Bring forward meaningful specifics and connect them into a natural story. Use vivid, original phrasing and a confident human voice; avoid cliches, generic filler, and résumé-like lists.
@@ -2503,9 +2535,9 @@ CRITICAL FORMAT SPECIFICATIONS & RULES:
 
 Candidate Context:
 - Name: ${candidateContext?.name || 'Candidate'}
-- Target Job Categories: ${candidateContext?.targetCategories?.join(', ') || 'Software Engineer'}
-- Verified Degree: ${candidateContext?.degreeTitle || 'Bachelor of Science'} from ${candidateContext?.institution || 'University'} (Class of ${candidateContext?.graduationYear || '2024'})
-- Years of Experience: ${candidateContext?.yearsOfExperience || 3} years
+- Target Job Categories: ${candidateContext?.targetCategories?.join(', ') || 'Not provided'}
+- Verified Degree: ${candidateContext?.degreeTitle || 'Not provided'} from ${candidateContext?.institution || 'Not provided'} (Class of ${candidateContext?.graduationYear || 'Not provided'})
+- Years of Experience: ${candidateContext?.yearsOfExperience ?? 'Not provided'}
 - Current Resume Summary: ${candidateContext?.resumeSummary || 'Not provided'}
 - Current 'About Me' text: ${candidateContext?.aboutMe || 'Not provided yet'}
 - Current Cover Letter: ${candidateContext?.coverLetterText || 'Not provided yet'}
@@ -2560,9 +2592,13 @@ Always provide structured, clear, and actionable feedback. Resume corrections mu
         }
       }
 
-      // Do not fabricate resume content when the AI service is not configured.
-      if (taskMode === 'resume') {
-        return res.status(503).json({ error: 'Resume proofreading is temporarily unavailable. Please try again later.' });
+      // Do not fabricate candidate content when the AI service is not configured.
+      if (taskMode === 'resume' || taskMode === 'about_me') {
+        return res.status(503).json({
+          error: taskMode === 'about_me'
+            ? 'The About Me writing assistant is temporarily unavailable. Your answers were not used to change your profile.'
+            : 'Resume proofreading is temporarily unavailable. Please try again later.',
+        });
       }
 
       const lastMessage = messages[messages.length - 1].content.toLowerCase();
@@ -2875,7 +2911,7 @@ Output strictly valid JSON with this format:
           parts: [{ text: message.content }],
         })),
         config: {
-          systemInstruction: `You are the RAMPED assistant for approved employers. Be helpful, conversational, and creative when explaining how to use the platform or refine a candidate search. You may answer general questions about RAMPED and help employers express explicit role, degree, institution, and skill requirements clearly. Do not select, rank, invent, or describe candidates; the separate credential search returns only exact profile matches. Never imply that a candidate has a credential or skill unless it is verified in their profile. Do not invent RAMPED policies, prices, or plan entitlements; say when you cannot verify a detail. About Me narratives belong to candidates: do not write personal claims on a candidate's behalf.`,
+          systemInstruction: `You are the RAMPED assistant for approved employers. Be helpful and conversational when explaining how to use the platform or refine a candidate search. You may help employers express role, degree, and skill requirements. Do not help use an institution or school as a search criterion; employers can still review verified education on candidate profiles. Do not select, rank, invent, or describe candidates; the separate credential search returns only exact profile matches. Never imply that a candidate has a credential or skill unless it is verified in their profile. Do not invent RAMPED policies, prices, or plan entitlements; say when you cannot verify a detail. About Me narratives belong to candidates: do not write personal claims on a candidate's behalf.`,
           temperature: 0.6,
         },
       });
@@ -2897,6 +2933,9 @@ Output strictly valid JSON with this format:
       if (!isRecord(criteria)) {
         return res.status(400).json({ error: 'Provide structured candidate search criteria.' });
       }
+      if ('institutions' in criteria) {
+        return res.status(400).json({ error: 'Institution-based candidate searches are not supported.' });
+      }
       if (!isExactCredentialCriteria(criteria)) {
         return res.status(400).json({ error: 'Search criteria contain invalid values.' });
       }
@@ -2904,7 +2943,6 @@ Output strictly valid JSON with this format:
       if (
         !normalizedCriteria.roles.length &&
         !normalizedCriteria.degrees.length &&
-        !normalizedCriteria.institutions.length &&
         !normalizedCriteria.skills.length &&
         !normalizedCriteria.location &&
         normalizedCriteria.minimumYearsExperience === null

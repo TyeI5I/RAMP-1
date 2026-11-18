@@ -10,10 +10,10 @@ const candidate = {
   skills: ['Python', 'Distributed Systems'],
 };
 
-test('preserves spaces in multiword employer criteria while ignoring empty comma-separated entries', () => {
-  assert.deepEqual(parseExactCriteriaList('Walker Dentals, University of Toronto, '), [
-    'Walker Dentals',
-    ' University of Toronto',
+test('preserves spaces in multiword criteria while ignoring empty comma-separated entries', () => {
+  assert.deepEqual(parseExactCriteriaList('Dental Assistant, Registered Dental Hygienist, '), [
+    'Dental Assistant',
+    ' Registered Dental Hygienist',
   ]);
 });
 
@@ -22,7 +22,6 @@ test('matches explicit credential values exactly, ignoring case and whitespace',
     matchesExactCredentialCriteria(candidate, {
       roles: [' software engineer '],
       degrees: ["MASTER'S DEGREE"],
-      institutions: ['Stanford University'],
       skills: ['Python', 'Distributed Systems'],
       location: '',
       minimumYearsExperience: null,
@@ -31,12 +30,11 @@ test('matches explicit credential values exactly, ignoring case and whitespace',
   );
 });
 
-test('requires every requested credential dimension and skill', () => {
+test('requires every requested role and skill', () => {
   assert.equal(
     matchesExactCredentialCriteria(candidate, {
-      roles: [],
+      roles: ['Dental Assistant'],
       degrees: ["Master's Degree"],
-      institutions: ['Harvard University'],
       skills: ['Python'],
       location: '',
       minimumYearsExperience: null,
@@ -47,7 +45,6 @@ test('requires every requested credential dimension and skill', () => {
     matchesExactCredentialCriteria(candidate, {
       roles: [],
       degrees: [],
-      institutions: [],
       skills: ['Python', 'Rust'],
       location: '',
       minimumYearsExperience: null,
@@ -61,7 +58,6 @@ test('does not broaden partial or empty criteria into matches', () => {
     matchesExactCredentialCriteria(candidate, {
       roles: [],
       degrees: ['Master'],
-      institutions: [],
       skills: [],
       location: '',
       minimumYearsExperience: null,
@@ -72,7 +68,6 @@ test('does not broaden partial or empty criteria into matches', () => {
     matchesExactCredentialCriteria(candidate, {
       roles: [],
       degrees: [],
-      institutions: [],
       skills: [],
       location: '',
       minimumYearsExperience: null,
@@ -85,7 +80,6 @@ test('requires the minimum experience and exact requested location', () => {
   const criteria = {
     roles: [],
     degrees: [],
-    institutions: [],
     skills: [],
     location: 'San Francisco, CA',
     minimumYearsExperience: 5,
@@ -93,6 +87,18 @@ test('requires the minimum experience and exact requested location', () => {
   assert.equal(matchesExactCredentialCriteria({ ...candidate, location: 'san francisco, ca', yearsOfExperience: 7 }, criteria), true);
   assert.equal(matchesExactCredentialCriteria({ ...candidate, location: 'San Francisco', yearsOfExperience: 7 }, criteria), false);
   assert.equal(matchesExactCredentialCriteria({ ...candidate, location: 'San Francisco, CA', yearsOfExperience: 4 }, criteria), false);
+});
+
+test('legacy saved institution filters do not restrict employer matches', () => {
+  const legacyCriteria = {
+    roles: [],
+    degrees: [],
+    institutions: ['Harvard University'],
+    skills: ['Python'],
+    location: '',
+    minimumYearsExperience: null,
+  };
+  assert.equal(matchesExactCredentialCriteria(candidate, legacyCriteria), true);
 });
 
 test('does not treat malformed profile values as matching credentials', () => {
@@ -107,7 +113,6 @@ test('does not treat malformed profile values as matching credentials', () => {
       {
         roles: ['Software Engineer'],
         degrees: [],
-        institutions: [],
         skills: [],
         location: '',
         minimumYearsExperience: null,

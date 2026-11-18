@@ -1,7 +1,6 @@
 export interface ExactCredentialCriteria {
   roles: string[];
   degrees: string[];
-  institutions: string[];
   skills: string[];
   location: string;
   minimumYearsExperience: number | null;
@@ -13,7 +12,7 @@ export const parseExactCriteriaList = (value: string) =>
 export const isExactCredentialCriteria = (value: unknown): value is ExactCredentialCriteria => {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
   const criteria = value as Record<string, unknown>;
-  const stringLists = ['roles', 'degrees', 'institutions', 'skills'];
+  const stringLists = ['roles', 'degrees', 'skills'];
   return (
     stringLists.every((key) => {
       const items = criteria[key];
@@ -59,7 +58,6 @@ export const matchesExactCredentialCriteria = (
   const hasCriteria =
     criteria.roles.length > 0 ||
     criteria.degrees.length > 0 ||
-    criteria.institutions.length > 0 ||
     criteria.skills.length > 0 ||
     criteria.location.length > 0 ||
     criteria.minimumYearsExperience !== null;
@@ -68,7 +66,6 @@ export const matchesExactCredentialCriteria = (
   return (
     matchesAnyExact(criteria.roles, stringList(candidate.targetCategories)) &&
     matchesAnyExact(criteria.degrees, [stringValue(candidate.degreeType), stringValue(candidate.degreeTitle)]) &&
-    matchesAnyExact(criteria.institutions, [stringValue(candidate.institution)]) &&
     criteria.skills.every((skill) =>
       stringList(candidate.skills).some((candidateSkill) => normalize(candidateSkill) === normalize(skill))
     ) &&

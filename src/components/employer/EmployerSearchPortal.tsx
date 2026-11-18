@@ -84,7 +84,6 @@ export const EmployerSearchPortal: React.FC = () => {
   const [searchCriteria, setSearchCriteria] = useState<ExactCredentialCriteria>({
     roles: [],
     degrees: [],
-    institutions: [],
     skills: [],
     location: '',
     minimumYearsExperience: null,
@@ -92,7 +91,6 @@ export const EmployerSearchPortal: React.FC = () => {
   const [criteriaText, setCriteriaText] = useState({
     roles: '',
     degrees: '',
-    institutions: '',
     skills: '',
   });
   const [searchCandidates, setSearchCandidates] = useState<CandidateProfile[]>([]);
@@ -117,7 +115,7 @@ export const EmployerSearchPortal: React.FC = () => {
     {
       id: 'employer-chat-welcome',
       role: 'model',
-      content: 'Hi! I can answer questions about RAMPED or help you phrase exact role, degree, institution, and skill requirements for candidate search.',
+      content: 'Hi! I can answer questions about RAMPED or help you phrase role, degree, and skill requirements for candidate search.',
     },
   ]);
 
@@ -167,14 +165,24 @@ export const EmployerSearchPortal: React.FC = () => {
 
   useEffect(() => {
     if (currentEmployer?.savedSearchCriteria) {
-      setSearchCriteria(currentEmployer.savedSearchCriteria);
-      setCriteriaText({
-        roles: currentEmployer.savedSearchCriteria.roles.join(', '),
-        degrees: currentEmployer.savedSearchCriteria.degrees.join(', '),
-        institutions: currentEmployer.savedSearchCriteria.institutions.join(', '),
-        skills: currentEmployer.savedSearchCriteria.skills.join(', '),
+      const savedCriteria = currentEmployer.savedSearchCriteria;
+      const hadInstitutionFilter =
+        'institutions' in savedCriteria &&
+        Array.isArray(savedCriteria.institutions) &&
+        savedCriteria.institutions.length > 0;
+      setSearchCriteria({
+        roles: savedCriteria.roles,
+        degrees: savedCriteria.degrees,
+        skills: savedCriteria.skills,
+        location: savedCriteria.location,
+        minimumYearsExperience: savedCriteria.minimumYearsExperience,
       });
-      setSearchSaved(true);
+      setCriteriaText({
+        roles: savedCriteria.roles.join(', '),
+        degrees: savedCriteria.degrees.join(', '),
+        skills: savedCriteria.skills.join(', '),
+      });
+      setSearchSaved(!hadInstitutionFilter);
     }
   }, [currentEmployer?.id, currentEmployer?.savedSearchCriteria]);
 
@@ -290,7 +298,7 @@ export const EmployerSearchPortal: React.FC = () => {
     }
   };
 
-  const setCriteriaList = (field: 'roles' | 'degrees' | 'institutions' | 'skills', value: string) => {
+  const setCriteriaList = (field: 'roles' | 'degrees' | 'skills', value: string) => {
     setCriteriaText((previous) => ({ ...previous, [field]: value }));
     setSearchCriteria((previous) => ({
       ...previous,
@@ -362,6 +370,19 @@ export const EmployerSearchPortal: React.FC = () => {
     setSearchCandidates([]);
     setGeminiError(null);
     setCurrentPage(1);
+    setSearchCriteria({
+      roles: [],
+      degrees: [],
+      skills: [],
+      location: '',
+      minimumYearsExperience: null,
+    });
+    setCriteriaText({
+      roles: '',
+      degrees: '',
+      skills: '',
+    });
+    setSearchSaved(false);
   };
 
   // Search results are the only candidates an employer can see; the server randomizes exact matches.
@@ -769,10 +790,6 @@ export const EmployerSearchPortal: React.FC = () => {
                   Exact degree(s) <span className="font-normal text-neutral-500">(comma-separated)</span>
                   <input value={criteriaText.degrees} onChange={(event) => setCriteriaList('degrees', event.target.value)} placeholder="Bachelor's Degree" className="mt-1 w-full px-3 py-2 text-xs bg-neutral-950 border border-neutral-800 rounded-xl text-white placeholder-neutral-500 focus:outline-none focus:border-emerald-500" />
                 </label>
-                <label className="text-[11px] font-semibold text-neutral-300">
-                  Institution(s) <span className="font-normal text-neutral-500">(optional, exact)</span>
-                  <input value={criteriaText.institutions} onChange={(event) => setCriteriaList('institutions', event.target.value)} placeholder="University name" className="mt-1 w-full px-3 py-2 text-xs bg-neutral-950 border border-neutral-800 rounded-xl text-white placeholder-neutral-500 focus:outline-none focus:border-emerald-500" />
-                </label>
               </div>
               <div className="flex flex-wrap items-center gap-2">
                 <button type="submit" disabled={isGeminiSearching} className="px-5 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-neutral-950 font-bold text-xs transition-colors flex items-center justify-center gap-1.5 disabled:opacity-50">
@@ -890,7 +907,6 @@ export const EmployerSearchPortal: React.FC = () => {
                   Applied exactly: {[
                     ...searchCriteria.roles.map((value) => `Role: ${value}`),
                     ...searchCriteria.degrees.map((value) => `Degree: ${value}`),
-                    ...searchCriteria.institutions.map((value) => `Institution: ${value}`),
                     ...searchCriteria.skills.map((value) => `Skill: ${value}`),
                     ...(searchCriteria.location ? [`Location: ${searchCriteria.location}`] : []),
                     ...(searchCriteria.minimumYearsExperience !== null ? [`Experience: ${searchCriteria.minimumYearsExperience}+ years`] : []),
