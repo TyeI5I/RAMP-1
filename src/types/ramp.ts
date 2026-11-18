@@ -194,16 +194,16 @@ export const TIER_DIFFERENTIATORS: TierDifferentiator[] = [
   {
     id: 'invites',
     feature: 'Direct Job Invitations',
-    tier1: '25 invites / month',
-    tier2: 'Unlimited invites + Priority VIP Delivery Badge',
-    tier2Advantage: 'No monthly cap, prioritized in candidate inbox',
+    tier1: '25 direct invites + 10 matching alerts / month',
+    tier2: 'Unlimited direct invites',
+    tier2Advantage: 'No monthly invite cap',
   },
   {
     id: 'search',
-    feature: 'AI Values & Narrative Search',
-    tier1: 'Manual category & degree filters',
-    tier2: 'Gemini Natural Language Search across "About Me" narratives & values',
-    tier2Advantage: 'Match on collaboration philosophy, work ethics & passions',
+    feature: 'Criteria-based candidate matching',
+    tier1: 'Match candidates to your saved criteria',
+    tier2: 'Match candidates to your saved criteria',
+    tier2Advantage: 'New-match alerts: 10/month on Tier 1, 20/month on Tier 2',
   },
   {
     id: 'registrar',
@@ -222,16 +222,16 @@ export const TIER_DIFFERENTIATORS: TierDifferentiator[] = [
   {
     id: 'alerts',
     feature: 'Real-Time Candidate Alerts',
-    tier1: 'Manual periodic browsing',
-    tier2: 'Instant push & email notifications as candidates pass verification',
-    tier2Advantage: 'First-mover access the second verified talent joins',
+    tier1: 'Up to 10 matching candidate alerts / month',
+    tier2: 'Up to 20 matching candidate alerts / month',
+    tier2Advantage: 'Alerts when a verified candidate becomes available and matches your criteria',
   },
   {
     id: 'team_seats',
     feature: 'Recruiter Team Seats',
-    tier1: '1 Recruiter seat',
-    tier2: 'Up to 5 Team Recruiter seats with shared invite tracking',
-    tier2Advantage: 'Collaborative team hiring and shared pipeline records',
+    tier1: '1 manager seat',
+    tier2: 'Up to 6 seats total, including the manager',
+    tier2Advantage: 'Invite up to five team members',
   },
 ];
 
@@ -257,8 +257,18 @@ export interface EmployerProfile {
   stripeSubscriptionId?: string;
   instantAlertsEnabled?: boolean;
   instantAlertCategories?: JobCategory[];
+  savedSearchCriteria?: {
+    roles: string[];
+    degrees: string[];
+    institutions: string[];
+    skills: string[];
+    location: string;
+    minimumYearsExperience: number | null;
+  };
+  teamSeats?: number; // Manager plus member seats; Tier 2 allows six total.
   monthlyInvitesSent?: number; // Quota tracking (25 for Tier 1, unlimited for Tier 2)
-  teamSeats?: number; // 1 for Tier 1, 5 for Tier 2
+  monthlyMatchAlertsUsed?: number;
+  managerUserId?: string;
   invoices?: InvoiceRecord[];
 }
 

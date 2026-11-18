@@ -235,7 +235,7 @@ export const CandidateDashboard: React.FC<CandidateDashboardProps> = ({ onOpenOn
   const handleDashboardGeminiDraft = async (toneOverride?: 'grounded' | 'collaborative' | 'curious') => {
     const activeTone = toneOverride || aboutMeTone;
     setIsGeminiLoadingAboutMe(true);
-    setAboutMeGeminiStatus('Gemini is generating an authentic personal narrative draft...');
+    setAboutMeGeminiStatus('Gemini is helping you shape your own story...');
     if (aboutMeText.trim()) {
       setPreviousAboutMeDraft(aboutMeText);
     }
@@ -250,6 +250,7 @@ export const CandidateDashboard: React.FC<CandidateDashboardProps> = ({ onOpenOn
         body: JSON.stringify({
           action: 'draft',
           tone: activeTone,
+          currentText: aboutMeText,
           candidateContext: {
             name: currentCandidate.name,
             degreeTitle: currentCandidate.degreeTitle,
@@ -261,14 +262,16 @@ export const CandidateDashboard: React.FC<CandidateDashboardProps> = ({ onOpenOn
 
       if (!res.ok) throw new Error('Failed to generate narrative');
       const data = await res.json();
-      if (data.narrative) {
+      if (data.needsInput && data.followUpQuestion) {
+        setAboutMeGeminiStatus(`Gemini asks: ${data.followUpQuestion}`);
+      } else if (data.narrative) {
         setAboutMeText(data.narrative);
-        setAboutMeGeminiStatus('✨ Gemini crafted a fresh personal narrative draft!');
+        setAboutMeGeminiStatus('✨ Gemini shaped a draft from the details you shared. Review it before saving.');
         setTimeout(() => setAboutMeGeminiStatus(null), 4000);
       }
     } catch (err: any) {
       console.warn('Gemini draft error:', err);
-      setAboutMeGeminiStatus('✨ Applied narrative draft.');
+      setAboutMeGeminiStatus('Gemini could not help with the draft right now. Your About Me text was not changed.');
       setTimeout(() => setAboutMeGeminiStatus(null), 3000);
     } finally {
       setIsGeminiLoadingAboutMe(false);
@@ -314,7 +317,7 @@ export const CandidateDashboard: React.FC<CandidateDashboardProps> = ({ onOpenOn
       }
     } catch (err: any) {
       console.warn('Gemini polish error:', err);
-      setAboutMeGeminiStatus('✨ Narrative updated.');
+      setAboutMeGeminiStatus('Gemini could not polish the draft right now. Your About Me text was not changed.');
       setTimeout(() => setAboutMeGeminiStatus(null), 3000);
     } finally {
       setIsGeminiLoadingAboutMe(false);

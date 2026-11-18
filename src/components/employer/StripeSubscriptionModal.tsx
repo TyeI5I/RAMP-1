@@ -547,8 +547,8 @@ export const StripeSubscriptionModal: React.FC<StripeSubscriptionModalProps> = (
                 <span className="mt-3 flex items-start gap-2 text-xs text-neutral-300">
                   <Check className="h-4 w-4 shrink-0 text-emerald-400" />
                   {plan === 'tier1'
-                    ? 'Verified search, basic filters, and 25 monthly invites.'
-                    : 'Unlimited invites, natural-language search, and instant alerts.'}
+                    ? 'Criteria-based candidate matching, 10 match alerts, and 25 direct invites each month.'
+                    : 'Criteria-based candidate matching, 20 match alerts, unlimited direct invites, and up to 6 seats.'}
                 </span>
               </button>
             ))}
@@ -575,25 +575,11 @@ export const StripeSubscriptionModal: React.FC<StripeSubscriptionModalProps> = (
           {tier === 'tier2' && (
             <fieldset className="space-y-2 rounded-xl border border-neutral-800 bg-neutral-950 p-4">
               <legend className="px-1 text-xs font-semibold text-white">
-                Instant alert categories
+                Candidate-match alerts use your saved role, skill, experience, location, and credential criteria.
               </legend>
-              <div className="flex flex-wrap gap-2">
-                {JOB_CATEGORIES.map((category) => (
-                  <button
-                    type="button"
-                    key={category}
-                    aria-pressed={alertCategories.includes(category)}
-                    onClick={() => toggleAlertCategory(category)}
-                    className={`rounded-lg border px-2.5 py-1 text-[11px] ${
-                      alertCategories.includes(category)
-                        ? 'border-emerald-700 bg-emerald-950/50 text-emerald-300'
-                        : 'border-neutral-800 text-neutral-400'
-                    }`}
-                  >
-                    {category}
-                  </button>
-                ))}
-              </div>
+              <p className="text-[11px] text-neutral-400">
+                Save your criteria in Match Candidates after subscribing to turn on alerts (up to 20/month).
+              </p>
             </fieldset>
           )}
 

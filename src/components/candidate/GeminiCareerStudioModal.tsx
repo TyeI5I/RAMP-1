@@ -21,6 +21,9 @@ interface Message {
   role: 'user' | 'model';
   content: string;
   timestamp: string;
+  taskMode?: 'resume' | 'cover_letter' | 'about_me' | 'general';
+  isError?: boolean;
+  needsInput?: boolean;
 }
 
 interface GeminiCareerStudioModalProps {
@@ -60,7 +63,7 @@ I have your verified background loaded:
 How can I help you stand out to verified recruiters today?
 - **Tweak Resume:** Rewrite bullet points using Google's XYZ formula for maximum impact.
 - **Write Cover Letter:** Draft a direct, personalized narrative for your target positions.
-- **Craft 'About Me':** Tell your authentic human story—your values, passions, and working style beyond the resume.`,
+- **Craft 'About Me':** Explore your story with Gemini and turn what makes you you into vivid, authentic writing.`,
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
     },
   ]);
@@ -77,7 +80,10 @@ How can I help you stand out to verified recruiters today?
 
   if (!isOpen || !currentCandidate) return null;
 
-  const sendMessage = async (customPrompt?: string) => {
+  const sendMessage = async (
+    customPrompt?: string,
+    taskMode: 'resume' | 'cover_letter' | 'about_me' | 'general' = mode
+  ) => {
     const textToSend = customPrompt || input.trim();
     if (!textToSend || isLoading) return;
 
@@ -105,7 +111,7 @@ How can I help you stand out to verified recruiters today?
             content: m.content,
           })),
           model,
-          taskMode: mode,
+          taskMode,
           candidateContext: {
             name: currentCandidate.name,
             email: currentCandidate.email,
@@ -122,31 +128,31 @@ How can I help you stand out to verified recruiters today?
         }),
       });
 
-      if (!response.ok) {
-        throw new Error(`HTTP error ${response.status}`);
-      }
-
       const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || `HTTP error ${response.status}`);
+      }
       const modelMsg: Message = {
         id: `msg-${Date.now() + 1}`,
         role: 'model',
         content: data.text,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        taskMode,
+        needsInput:
+          data.needsInput ||
+          ((taskMode === 'about_me' || taskMode === 'resume') && data.text.trim().endsWith('?')),
       };
 
       setMessages((prev) => [...prev, modelMsg]);
-    } catch (err: any) {
+    } catch (err) {
       console.error('Failed to send message to Gemini API:', err);
-      // Fallback response if network or server error
+      const errorMessage = err instanceof Error ? err.message : 'Unknown error';
       const errorReply: Message = {
         id: `msg-err-${Date.now()}`,
         role: 'model',
-        content: `I analyzed your request for ${currentCandidate.name}. Here is a suggested enhancement for your profile:
-
-> "Passionate ${currentCandidate.targetCategories[0]} focused on engineering excellence, scalable architectures, and collaborative team culture. Dedicated to building software that respects user privacy and accessibility."
-
-Feel free to customize or ask me to tailor it for a specific role!`,
+        content: `I couldn't reach Gemini. No profile changes were made. Please try again. (${errorMessage})`,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        isError: true,
       };
       setMessages((prev) => [...prev, errorReply]);
     } finally {
@@ -158,9 +164,10 @@ Feel free to customize or ask me to tailor it for a specific role!`,
     setMode(promptType);
     if (promptType === 'resume') {
       sendMessage(
-        `Please review and optimize my resume summary and bullet points. Here is my current profile summary: "${
-          currentCandidate.resumeSummary || currentCandidate.bio
-        }". Rewrite it with the Google XYZ formula for maximum recruiter impact.`
+        `Proofread and format only the resume text I provide below. Correct spelling, grammar, punctuation, capitalization, and formatting only. Do not rewrite, paraphrase, add, remove, or change any facts, achievements, employers, dates, qualifications, or metrics. If there is no resume text, ask me to paste it. Resume text: "${
+          currentCandidate.resumeSummary || ''
+        }"`,
+        'resume'
       );
     } else if (promptType === 'cover_letter') {
       sendMessage(
@@ -168,20 +175,15 @@ Feel free to customize or ask me to tailor it for a specific role!`,
           ', '
         )}". Highlight my verified ${currentCandidate.degreeTitle} from ${
           currentCandidate.institution
-        } and my ${currentCandidate.yearsOfExperience} years of experience.`
+        } and my ${currentCandidate.yearsOfExperience} years of experience.`,
+        'cover_letter'
       );
     } else if (promptType === 'about_me') {
       sendMessage(
-        `Help me craft an authentic "About Me" personal narrative touching on RAMPED's 5 essential checklist pillars:
-1. Core values and work philosophy (intellectual humility, craft integrity).
-2. Collaboration and communication style (psychological safety, feedback).
-3. Curiosity and problem-solving mindset (what technical puzzles excite me).
-4. Life beyond the screen (passions, outdoor pursuits, creative hobbies).
-5. Ideal team culture (blameless environment, high autonomy).
-
-Here is my current draft or profile context: "${
-          currentCandidate.aboutMe || currentCandidate.bio || 'Not yet written'
-        }". Please draft a warm, human, memorable narrative.`
+        `Be my imaginative, thoughtful writing partner. Help me express the fullest, most distinctive version of who I am in my own voice. Ask one thoughtful, open-ended question at a time when you need more of my perspective or examples. Once you know enough, shape what I shared into a complete, vivid, natural About Me narrative—not a generic template or a résumé summary. You may offer ideas to help me discover what I want to say, but never claim those ideas are true about me. Do not invent personal facts, values, interests, preferences, or experiences. Here is my current draft, if any: "${
+          currentCandidate.aboutMe || ''
+        }".`,
+        'about_me'
       );
     }
   };
@@ -356,7 +358,7 @@ Here is my current draft or profile context: "${
                 <div className="flex items-center justify-between pt-1 border-t border-neutral-800/60 text-[10px] text-neutral-400 font-mono">
                   <span>{msg.timestamp}</span>
 
-                  {msg.role === 'model' && (
+                  {msg.role === 'model' && !msg.isError && !msg.needsInput && (
                     <div className="flex items-center gap-2">
                       <button
                         onClick={() => handleCopy(msg.id, msg.content)}
@@ -371,23 +373,37 @@ Here is my current draft or profile context: "${
                       </button>
 
                       {/* 1-Click Apply Actions */}
-                      <button
-                        onClick={() => handleApplyToProfile('aboutMe', msg.content)}
-                        className="text-amber-400 hover:underline flex items-center gap-1 font-semibold"
-                        title="Save as your profile's About Me narrative"
-                      >
-                        <User className="w-3 h-3" />
-                        Apply to About Me
-                      </button>
+                      {msg.taskMode === 'about_me' && (
+                        <button
+                          onClick={() => handleApplyToProfile('aboutMe', msg.content)}
+                          className="text-amber-400 hover:underline flex items-center gap-1 font-semibold"
+                          title="Review and save this About Me draft"
+                        >
+                          <User className="w-3 h-3" />
+                          Apply to About Me
+                        </button>
+                      )}
 
-                      <button
-                        onClick={() => handleApplyToProfile('resumeSummary', msg.content)}
-                        className="text-blue-400 hover:underline flex items-center gap-1 font-semibold"
-                        title="Save as your Resume Summary"
-                      >
-                        <FileText className="w-3 h-3" />
-                        Apply to Resume
-                      </button>
+                      {msg.taskMode === 'resume' && (
+                        <button
+                          onClick={() => handleApplyToProfile('resumeSummary', msg.content)}
+                          className="text-blue-400 hover:underline flex items-center gap-1 font-semibold"
+                          title="Review and save the proofread text as your Resume Summary"
+                        >
+                          <FileText className="w-3 h-3" />
+                          Apply Proofread Text
+                        </button>
+                      )}
+                      {msg.taskMode === 'cover_letter' && (
+                        <button
+                          onClick={() => handleApplyToProfile('coverLetterText', msg.content)}
+                          className="text-purple-400 hover:underline flex items-center gap-1 font-semibold"
+                          title="Review and save this cover letter"
+                        >
+                          <Mail className="w-3 h-3" />
+                          Apply to Cover Letter
+                        </button>
+                      )}
                     </div>
                   )}
                 </div>
@@ -423,7 +439,7 @@ Here is my current draft or profile context: "${
               type="text"
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              placeholder="Ask Gemini to tweak your resume, write a cover letter, or refine your About Me..."
+              placeholder="Ask Gemini to proofread your resume, write a cover letter, or refine your About Me..."
               className="flex-1 px-4 py-2.5 text-xs bg-neutral-900 border border-neutral-800 rounded-xl text-white placeholder-neutral-500 focus:outline-none focus:border-emerald-500 transition-colors"
             />
             <button

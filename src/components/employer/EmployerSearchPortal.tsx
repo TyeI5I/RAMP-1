@@ -2,17 +2,13 @@ import React, { useState, useMemo, useEffect } from 'react';
 import { useRamp } from '../../context/RampContext';
 import {
   CandidateProfile,
-  JobCategory,
-  JOB_CATEGORIES,
-  DEGREE_TYPES,
-  DegreeType,
-  RemotePreference,
   SubscriptionTier,
   TIER_DIFFERENTIATORS,
 } from '../../types/ramp';
 import { EmployerVerificationGate } from './EmployerVerificationGate';
 import { StripeSubscriptionModal } from './StripeSubscriptionModal';
 import { SendInviteModal } from './SendInviteModal';
+import type { ExactCredentialCriteria } from '../../utils/exactCredentialSearch';
 import {
   Search,
   Filter,
@@ -51,47 +47,65 @@ import {
   Copy,
   CalendarDays,
   Columns,
+  MessageSquare,
 } from 'lucide-react';
 
-// Fisher-Yates Pure Shuffle algorithm (guarantees unbiased uniform distribution)
-function shuffleArray<T>(array: T[]): T[] {
-  const arr = [...array];
-  for (let i = arr.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [arr[i], arr[j]] = [arr[j], arr[i]];
-  }
-  return arr;
+interface EmployerChatMessage {
+  id: string;
+  role: 'user' | 'model';
+  content: string;
+  isError?: boolean;
 }
 
 export const EmployerSearchPortal: React.FC = () => {
   const {
+    isDemoMode,
     currentEmployer,
     authSession,
     candidates,
     jobInvites,
     selectedCandidateForInvite,
     setSelectedCandidateForInvite,
+    updateEmployerProfile,
     employers,
     setCurrentEmployerId,
   } = useRamp();
 
   // Search & Filter State - defaulted to 'All Categories' so active verified talent is visible immediately
-  const [selectedCategory, setSelectedCategory] = useState<string>('All Categories');
-  const [selectedDegree, setSelectedDegree] = useState<string>('All Degrees');
-  const [selectedRemote, setSelectedRemote] = useState<string>('All');
-  const [locationQuery, setLocationQuery] = useState<string>('');
-  const [shuffleSalt, setShuffleSalt] = useState<number>(0);
 
   // Pagination state (list of ten per page)
   const [currentPage, setCurrentPage] = useState<number>(1);
   const PAGE_SIZE = 10;
 
   // Gemini Natural Language Employer Search State
-  const [geminiQuery, setGeminiQuery] = useState<string>('');
+  const [searchCriteria, setSearchCriteria] = useState<ExactCredentialCriteria>({
+    roles: [],
+    degrees: [],
+    institutions: [],
+    skills: [],
+    location: '',
+    minimumYearsExperience: null,
+  });
+  const [searchCandidates, setSearchCandidates] = useState<CandidateProfile[]>([]);
+  const [searchSaved, setSearchSaved] = useState(false);
+  const [isSavingSearch, setIsSavingSearch] = useState(false);
   const [isGeminiSearching, setIsGeminiSearching] = useState<boolean>(false);
   const [geminiActive, setGeminiActive] = useState<boolean>(false);
-  const [geminiMatchedIds, setGeminiMatchedIds] = useState<string[] | null>(null);
-  const [geminiCriteria, setGeminiCriteria] = useState<any>(null);
+  const [geminiError, setGeminiError] = useState<string | null>(null);
+  const [isEmployerChatOpen, setIsEmployerChatOpen] = useState(false);
+  const [employerChatInput, setEmployerChatInput] = useState('');
+  const [isEmployerChatLoading, setIsEmployerChatLoading] = useState(false);
+  const [employerChatMessages, setEmployerChatMessages] = useState<EmployerChatMessage[]>([
+    {
+      id: 'employer-chat-welcome',
+      role: 'model',
+      content: 'Hi! I can answer questions about RAMPED or help you phrase exact role, degree, institution, and skill requirements for candidate search.',
+    },
+  ]);
+  const [teamSeats, setTeamSeats] = useState<Array<{ member_email: string; seat_role: string; status: string }>>([]);
+  const [teamInviteEmail, setTeamInviteEmail] = useState('');
+  const [teamError, setTeamError] = useState<string | null>(null);
+  const [isTeamLoading, setIsTeamLoading] = useState(false);
 
   // Modals & Advanced Tier 2 Workflows
   const [isStripeModalOpen, setIsStripeModalOpen] = useState(() =>
@@ -112,6 +126,30 @@ export const EmployerSearchPortal: React.FC = () => {
   const [isTierMatrixModalOpen, setIsTierMatrixModalOpen] = useState(false);
   const [copiedCandidateId, setCopiedCandidateId] = useState<string | null>(null);
 
+  useEffect(() => {
+    if (isDemoMode || !authSession || currentEmployer?.subscriptionTier !== 'tier2') return;
+    let active = true;
+    void fetch('/api/employer/team', {
+      headers: { Authorization: `Bearer ${authSession.access_token}` },
+    })
+      .then(async (response) => {
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'Unable to load team seats.');
+        if (active) setTeamSeats(data.seats || []);
+      })
+      .catch((error: unknown) => {
+        if (active) setTeamError(error instanceof Error ? error.message : 'Unable to load team seats.');
+      });
+    return () => { active = false; };
+  }, [isDemoMode, authSession?.access_token, currentEmployer?.id, currentEmployer?.subscriptionTier]);
+
+  useEffect(() => {
+    if (currentEmployer?.savedSearchCriteria) {
+      setSearchCriteria(currentEmployer.savedSearchCriteria);
+      setSearchSaved(true);
+    }
+  }, [currentEmployer?.id, currentEmployer?.savedSearchCriteria]);
+
   // Verification Gate Check: If employer is not approved, show Verification Gate
   if (!currentEmployer || currentEmployer.verificationStatus !== 'approved') {
     return <EmployerVerificationGate />;
@@ -128,17 +166,18 @@ export const EmployerSearchPortal: React.FC = () => {
   ).length;
   const tier1Quota = 25;
 
-  // Handle Gemini Natural Language Search (directly brings up results, no recruiter briefing card)
-  const handleGeminiSearch = async (queryText?: string) => {
-    const query = (queryText !== undefined ? queryText : geminiQuery).trim();
-    if (!query) return;
-
-    if (queryText !== undefined) {
-      setGeminiQuery(queryText);
-    }
-
+  const handleGeminiSearch = async () => {
     setIsGeminiSearching(true);
     setCurrentPage(1);
+    setGeminiError(null);
+    const hasCriteria = Object.values(searchCriteria).some((value) =>
+      Array.isArray(value) ? value.length > 0 : Boolean(value)
+    );
+    if (!hasCriteria) {
+      setGeminiError('Enter at least one role, credential, skill, location, or experience requirement.');
+      setIsGeminiSearching(false);
+      return;
+    }
 
     try {
       const res = await fetch('/api/gemini/employer-search', {
@@ -148,137 +187,147 @@ export const EmployerSearchPortal: React.FC = () => {
           ...(authSession ? { Authorization: `Bearer ${authSession.access_token}` } : {}),
         },
         body: JSON.stringify({
-          prompt: query,
+          criteria: searchCriteria,
           candidates,
         }),
       });
 
-      if (!res.ok) throw new Error('Gemini employer search request failed');
-      const data = await res.json();
-      setGeminiMatchedIds(data.matchedCandidateIds || []);
-      setGeminiCriteria(data.extractedCriteria || {});
-      setGeminiActive(true);
-      setShuffleSalt((s) => s + 1);
-    } catch (err) {
-      console.error('Gemini employer search failed, using heuristic fairness shuffle:', err);
-      const keywords = query.toLowerCase().split(/\s+/).filter((w) => w.length > 2);
-      const eligible = candidates.filter(
-        (c) => c.verificationStatus === 'verified' && c.simulatedDaysInactive < 14
-      );
-      const matched = eligible.filter((c) => {
-        const text = `${c.name} ${c.targetCategories.join(' ')} ${c.degreeTitle} ${
-          c.institution
-        } ${c.skills.join(' ')} ${c.aboutMe || ''} ${c.bio}`.toLowerCase();
-        return keywords.some((k) => text.includes(k));
-      });
-      // Guarantee list of ten if there is ten in the pool
-      let pool = [...matched];
-      if (pool.length < 10 && eligible.length >= 10) {
-        const remaining = eligible.filter((c) => !pool.some((p) => p.id === c.id));
-        const needed = Math.min(10 - pool.length, remaining.length);
-        pool.push(...shuffleArray(remaining).slice(0, needed));
+      if (!res.ok) {
+        const errorData = await res.json();
+        throw new Error(errorData.error || 'Exact credential search failed.');
       }
-      const shuffledIds = shuffleArray(pool.slice(0, 10).map((c) => c.id));
-      setGeminiMatchedIds(shuffledIds);
+      const data = await res.json();
+      setSearchCandidates(data.matchedCandidates || []);
       setGeminiActive(true);
-      setShuffleSalt((s) => s + 1);
+    } catch (err) {
+      console.error('Exact credential search failed:', err);
+      setGeminiError(err instanceof Error ? err.message : 'Exact credential search failed. Please try again.');
+      setSearchCandidates([]);
+      setGeminiActive(true);
     } finally {
       setIsGeminiSearching(false);
     }
   };
 
-  const handleClearGeminiSearch = () => {
-    setGeminiActive(false);
-    setGeminiMatchedIds(null);
-    setGeminiCriteria(null);
-    setGeminiQuery('');
-    setCurrentPage(1);
-    setShuffleSalt((s) => s + 1);
+  const handleSaveSearchCriteria = async () => {
+    setIsSavingSearch(true);
+    setGeminiError(null);
+    try {
+      if (isDemoMode) {
+        updateEmployerProfile({ savedSearchCriteria: searchCriteria });
+      } else {
+        const response = await fetch('/api/employer/search-criteria', {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(authSession ? { Authorization: `Bearer ${authSession.access_token}` } : {}),
+          },
+          body: JSON.stringify({ criteria: searchCriteria }),
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'Unable to save matching criteria.');
+        updateEmployerProfile({ savedSearchCriteria: searchCriteria });
+      }
+      setSearchSaved(true);
+    } catch (error) {
+      setGeminiError(error instanceof Error ? error.message : 'Unable to save matching criteria.');
+    } finally {
+      setIsSavingSearch(false);
+    }
   };
 
-  // Filter and randomize candidates (Fairness First matching logic - returns a list of ten if there is ten)
+  const handleInviteTeamSeat = async (event: React.FormEvent) => {
+    event.preventDefault();
+    const email = teamInviteEmail.trim();
+    if (!email || isTeamLoading || !authSession) return;
+    setIsTeamLoading(true);
+    setTeamError(null);
+    try {
+      const response = await fetch('/api/employer/team', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authSession.access_token}`,
+        },
+        body: JSON.stringify({ email }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Unable to invite this team member.');
+      setTeamSeats((seats) => [...seats, data]);
+      setTeamInviteEmail('');
+    } catch (error) {
+      setTeamError(error instanceof Error ? error.message : 'Unable to invite this team member.');
+    } finally {
+      setIsTeamLoading(false);
+    }
+  };
+
+  const setCriteriaList = (field: 'roles' | 'degrees' | 'institutions' | 'skills', value: string) => {
+    setSearchCriteria((previous) => ({
+      ...previous,
+      [field]: value.split(',').map((item) => item.trim()).filter(Boolean),
+    }));
+    setSearchSaved(false);
+  };
+
+  const sendEmployerChatMessage = async () => {
+    const text = employerChatInput.trim();
+    if (!text || isEmployerChatLoading) return;
+
+    const userMessage: EmployerChatMessage = {
+      id: `employer-user-${Date.now()}`,
+      role: 'user',
+      content: text,
+    };
+    const conversation = [...employerChatMessages.filter((message) => !message.isError), userMessage];
+    setEmployerChatMessages(conversation);
+    setEmployerChatInput('');
+    setIsEmployerChatLoading(true);
+
+    try {
+      const response = await fetch('/api/gemini/employer-chat', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(authSession ? { Authorization: `Bearer ${authSession.access_token}` } : {}),
+        },
+        body: JSON.stringify({
+          messages: conversation.slice(-20).map(({ role, content }) => ({ role, content })),
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Employer assistant request failed.');
+      setEmployerChatMessages((previous) => [
+        ...previous,
+        { id: `employer-model-${Date.now()}`, role: 'model', content: data.text },
+      ]);
+    } catch (err) {
+      console.error('Employer assistant failed:', err);
+      setEmployerChatMessages((previous) => [
+        ...previous,
+        {
+          id: `employer-error-${Date.now()}`,
+          role: 'model',
+          content: err instanceof Error ? err.message : 'Employer assistant failed. Please try again.',
+          isError: true,
+        },
+      ]);
+    } finally {
+      setIsEmployerChatLoading(false);
+    }
+  };
+
+  const handleClearGeminiSearch = () => {
+    setGeminiActive(false);
+    setSearchCandidates([]);
+    setGeminiError(null);
+    setCurrentPage(1);
+  };
+
+  // Search results are the only candidates an employer can see; the server randomizes exact matches.
   const filteredCandidates = useMemo(() => {
-    // 1. Strict Eligibility: Verified credentials, active (under 14 days inactive), and not snoozed
-    const eligible = candidates.filter((c) => {
-      // Must not be snoozed
-      if (c.isSnoozed) return false;
-
-      // Must be verified
-      if (c.verificationStatus !== 'verified') return false;
-
-      // Strict 14-day inactivity rule: Profiles inactive 14+ days are archived
-      if (c.simulatedDaysInactive >= 14 || c.lifecycleStatus === 'archived' || c.lifecycleStatus === 'deleted') {
-        return false;
-      }
-      return true;
-    });
-
-    // 2. If Gemini Natural Language Search is active, filter by matched IDs
-    if (geminiActive && geminiMatchedIds) {
-      const matched = eligible.filter((c) => geminiMatchedIds.includes(c.id));
-      if (matched.length < 10 && eligible.length >= 10) {
-        const remaining = eligible.filter((c) => !geminiMatchedIds.includes(c.id));
-        const needed = Math.min(10 - matched.length, remaining.length);
-        return [...shuffleArray(matched), ...shuffleArray(remaining).slice(0, needed)];
-      }
-      return shuffleArray(matched);
-    }
-
-    // 3. Manual Discovery Filters
-    const matches = eligible.filter((c) => {
-      // Target position category matching
-      if (selectedCategory && selectedCategory !== 'All Categories') {
-        if (!c.targetCategories.includes(selectedCategory as JobCategory)) return false;
-      }
-
-      // Baseline Degree filter
-      if (selectedDegree && selectedDegree !== 'All Degrees') {
-        if (c.degreeType !== selectedDegree) return false;
-      }
-
-      // Remote filter
-      if (selectedRemote && selectedRemote !== 'All') {
-        if (c.remotePreference !== selectedRemote) return false;
-      }
-
-      // Location filter
-      if (locationQuery.trim()) {
-        const query = locationQuery.toLowerCase();
-        if (
-          !c.location.toLowerCase().includes(query) &&
-          !c.institution.toLowerCase().includes(query)
-        ) {
-          return false;
-        }
-      }
-
-      return true;
-    });
-
-    // If manual filter has matches but fewer than 10, and pool has 10 or more,
-    // supplement with related talent from the active pool so that results are a list of ten if there is ten
-    if (matches.length > 0 && matches.length < 10 && eligible.length >= 10) {
-      const remaining = eligible.filter((c) => !matches.some((m) => m.id === c.id));
-      const needed = Math.min(10 - matches.length, remaining.length);
-      return [...shuffleArray(matches), ...shuffleArray(remaining).slice(0, needed)];
-    }
-
-    if (matches.length === 0) {
-      // Fall back to general active pool up to 10
-      return shuffleArray(eligible).slice(0, 10);
-    }
-
-    return shuffleArray(matches);
-  }, [
-    candidates,
-    geminiActive,
-    geminiMatchedIds,
-    selectedCategory,
-    selectedDegree,
-    selectedRemote,
-    locationQuery,
-    shuffleSalt,
-  ]);
+    return geminiActive ? searchCandidates : [];
+  }, [geminiActive, searchCandidates]);
 
   // Pagination math: results should be a list of ten, if there is ten
   const totalResults = filteredCandidates.length;
@@ -288,7 +337,9 @@ export const EmployerSearchPortal: React.FC = () => {
     currentPage * PAGE_SIZE
   );
 
-  const employerInvites = jobInvites.filter((inv) => inv.employerId === currentEmployer.id);
+  const employerInvites = jobInvites.filter(
+    (inv) => inv.employerId === (currentEmployer.managerUserId || currentEmployer.id)
+  );
 
   return (
     <div className="space-y-6">
@@ -326,14 +377,14 @@ export const EmployerSearchPortal: React.FC = () => {
                   </span>
                 ) : (
                   <span className="text-blue-400 flex items-center gap-1">
-                    <Building className="w-3.5 h-3.5" /> Tier 1 Standard (25 Invites/mo)
+                    <Building className="w-3.5 h-3.5" /> Tier 1 Standard
                   </span>
                 )}
               </div>
               <div className="text-[10px] text-neutral-500 font-mono mt-0.5">
                 {isTier2
-                  ? 'Unlimited Invites · 5 Seats · Registrar Vault'
-                  : `Monthly Quota: ${monthlyInvitesUsed} / ${tier1Quota} Invites Used`}
+                  ? `Unlimited Invites · ${teamSeats.length || 6}/6 Seats · ${currentEmployer.monthlyMatchAlertsUsed || 0}/20 Match Alerts`
+                  : `${currentEmployer.monthlyMatchAlertsUsed || 0}/10 Match Alerts · ${monthlyInvitesUsed}/${tier1Quota} Invites`}
               </div>
             </div>
 
@@ -355,11 +406,11 @@ export const EmployerSearchPortal: React.FC = () => {
           <div className="flex flex-wrap items-center gap-3">
             <div className="flex items-center gap-1.5 text-neutral-300">
               <Users className="w-3.5 h-3.5 text-blue-400" />
-              <span>Seats: <strong className="text-white">{isTier2 ? '5 Team Recruiter Seats' : '1 Recruiter Seat'}</strong></span>
+              <span>Seats: <strong className="text-white">{isTier2 ? '6 total including manager' : '1 manager seat'}</strong></span>
             </div>
             <div className="flex items-center gap-1.5 text-neutral-300">
               <Send className="w-3.5 h-3.5 text-emerald-400" />
-              <span>Direct Invites: <strong className="text-white">{isTier2 ? 'Unlimited + VIP Delivery Badge' : `${tier1Quota - monthlyInvitesUsed} remaining this cycle`}</strong></span>
+              <span>Direct Invites: <strong className="text-white">{isTier2 ? 'Unlimited' : `${tier1Quota - monthlyInvitesUsed} remaining this cycle`}</strong></span>
             </div>
             <div className="flex items-center gap-1.5 text-neutral-300">
               <GraduationCap className="w-3.5 h-3.5 text-purple-400" />
@@ -385,6 +436,44 @@ export const EmployerSearchPortal: React.FC = () => {
         </div>
       </div>
 
+      {isTier2 && (
+        <section className="p-5 rounded-2xl bg-neutral-900 border border-neutral-800 space-y-4">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <h3 className="text-sm font-bold text-white">Tier 2 team seats</h3>
+              <p className="text-xs text-neutral-400 mt-1">Six seats total, including the manager.</p>
+            </div>
+            <span className="text-xs text-neutral-300 font-mono">{teamSeats.length || 1}/6 used</span>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {(teamSeats.length
+              ? teamSeats
+              : [{ member_email: currentEmployer.email, seat_role: 'manager', status: 'active' }]
+            ).map((seat) => (
+              <span key={seat.member_email} className="px-3 py-1.5 rounded-lg bg-neutral-950 border border-neutral-800 text-xs text-neutral-300">
+                {seat.member_email} · {seat.seat_role}
+              </span>
+            ))}
+          </div>
+          {(!currentEmployer.managerUserId || currentEmployer.managerUserId === currentEmployer.id) && (
+            <form onSubmit={(event) => void handleInviteTeamSeat(event)} className="flex flex-col sm:flex-row gap-2">
+              <input
+                type="email"
+                required
+                value={teamInviteEmail}
+                onChange={(event) => setTeamInviteEmail(event.target.value)}
+                placeholder="Team member email"
+                className="flex-1 min-w-0 px-3 py-2 text-xs bg-neutral-950 border border-neutral-800 rounded-lg text-white placeholder-neutral-500 focus:outline-none focus:border-emerald-500"
+              />
+              <button type="submit" disabled={isTeamLoading || teamSeats.length >= 6} className="px-4 py-2 rounded-lg bg-emerald-500 text-neutral-950 font-bold text-xs disabled:opacity-50">
+                {isTeamLoading ? 'Sending invite...' : 'Invite team member'}
+              </button>
+            </form>
+          )}
+          {teamError && <p role="alert" className="text-xs text-red-300">{teamError}</p>}
+        </section>
+      )}
+
       {/* View Switcher: Search Pool vs Sent Invites vs Billing */}
       <div className="flex items-center justify-between border-b border-neutral-800 pb-2">
         <div className="flex items-center gap-1">
@@ -397,7 +486,7 @@ export const EmployerSearchPortal: React.FC = () => {
                 : 'text-neutral-400 hover:text-white'
             }`}
           >
-            Discover Verified Talent ({filteredCandidates.length})
+            Match Candidates ({filteredCandidates.length})
           </button>
           <button
             onClick={() => setViewMode('sent_invites')}
@@ -584,7 +673,7 @@ export const EmployerSearchPortal: React.FC = () => {
       ) : (
         /* Candidates Discovery Search View */
         <div className="space-y-5">
-          {/* Gemini Natural Language Search Bar (Values & Personal Narrative Matcher) */}
+          {/* Criteria-based search; only exact matching candidates are returned. */}
           <div className="p-5 rounded-2xl bg-neutral-900 border border-neutral-800 space-y-3 relative overflow-hidden">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
               <div className="flex items-center gap-2">
@@ -593,19 +682,10 @@ export const EmployerSearchPortal: React.FC = () => {
                 </div>
                 <div>
                   <h3 className="text-xs font-bold text-white uppercase tracking-wider font-mono flex items-center gap-2">
-                    <span>Gemini AI Values & Narrative Search</span>
-                    {isTier2 ? (
-                      <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-950 text-emerald-300 border border-emerald-800">
-                        Tier 2 Unlocked
-                      </span>
-                    ) : (
-                      <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-amber-950 text-amber-300 border border-amber-800">
-                        Tier 2 Enterprise Feature
-                      </span>
-                    )}
+                    <span>Criteria-Based Candidate Matching</span>
                   </h3>
                   <p className="text-[11px] text-neutral-400">
-                    Find candidates by searching their verified credentials, personal values, collaboration style, and 'About Me' stories.
+                    Set the role, skills, experience, location, and credentials you need. Only verified candidates matching every requested criterion are returned.
                   </p>
                 </div>
               </div>
@@ -621,104 +701,140 @@ export const EmployerSearchPortal: React.FC = () => {
               )}
             </div>
 
-            <form
-              onSubmit={(e) => {
-                e.preventDefault();
-                handleGeminiSearch();
-              }}
-              className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2"
-            >
-              <div className="relative flex-1">
+            <form onSubmit={(e) => { e.preventDefault(); void handleGeminiSearch(); }} className="space-y-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                <label className="text-[11px] font-semibold text-neutral-300">
+                  Role or title
                 <input
                   type="text"
-                  value={geminiQuery}
-                  onChange={(e) => setGeminiQuery(e.target.value)}
-                  placeholder="e.g. Distributed systems engineer from Stanford or MIT who values psychological safety and blameless retrospectives..."
-                  className="w-full pl-4 pr-10 py-2.5 text-xs bg-neutral-950 border border-neutral-800 rounded-xl text-white placeholder-neutral-500 focus:outline-none focus:border-emerald-500 transition-colors"
+                    value={searchCriteria.roles.join(', ')}
+                    onChange={(event) => setCriteriaList('roles', event.target.value)}
+                    placeholder="Exact role or category"
+                    className="mt-1 w-full px-3 py-2 text-xs bg-neutral-950 border border-neutral-800 rounded-xl text-white placeholder-neutral-500 focus:outline-none focus:border-emerald-500"
                 />
-                {geminiQuery && (
-                  <button
-                    type="button"
-                    onClick={() => setGeminiQuery('')}
-                    className="absolute right-3 top-3 text-neutral-500 hover:text-white text-xs"
-                  >
-                    ×
-                  </button>
-                )}
+                </label>
+                <label className="text-[11px] font-semibold text-neutral-300">
+                  Required skills <span className="font-normal text-neutral-500">(comma-separated, all required)</span>
+                  <input value={searchCriteria.skills.join(', ')} onChange={(event) => setCriteriaList('skills', event.target.value)} placeholder="Python, SQL" className="mt-1 w-full px-3 py-2 text-xs bg-neutral-950 border border-neutral-800 rounded-xl text-white placeholder-neutral-500 focus:outline-none focus:border-emerald-500" />
+                </label>
+                <label className="text-[11px] font-semibold text-neutral-300">
+                  Minimum years of experience
+                  <input type="number" min="0" max="80" value={searchCriteria.minimumYearsExperience ?? ''} onChange={(event) => setSearchCriteria((previous) => ({ ...previous, minimumYearsExperience: event.target.value === '' ? null : Number(event.target.value) }))} placeholder="Any" className="mt-1 w-full px-3 py-2 text-xs bg-neutral-950 border border-neutral-800 rounded-xl text-white placeholder-neutral-500 focus:outline-none focus:border-emerald-500" />
+                </label>
+                <label className="text-[11px] font-semibold text-neutral-300">
+                  Candidate location <span className="font-normal text-neutral-500">(exact profile location)</span>
+                  <input value={searchCriteria.location} onChange={(event) => { setSearchCriteria((previous) => ({ ...previous, location: event.target.value })); setSearchSaved(false); }} placeholder="City, State or Country" className="mt-1 w-full px-3 py-2 text-xs bg-neutral-950 border border-neutral-800 rounded-xl text-white placeholder-neutral-500 focus:outline-none focus:border-emerald-500" />
+                </label>
+                <label className="text-[11px] font-semibold text-neutral-300">
+                  Exact degree(s) <span className="font-normal text-neutral-500">(comma-separated)</span>
+                  <input value={searchCriteria.degrees.join(', ')} onChange={(event) => setCriteriaList('degrees', event.target.value)} placeholder="Bachelor's Degree" className="mt-1 w-full px-3 py-2 text-xs bg-neutral-950 border border-neutral-800 rounded-xl text-white placeholder-neutral-500 focus:outline-none focus:border-emerald-500" />
+                </label>
+                <label className="text-[11px] font-semibold text-neutral-300">
+                  Institution(s) <span className="font-normal text-neutral-500">(optional, exact)</span>
+                  <input value={searchCriteria.institutions.join(', ')} onChange={(event) => setCriteriaList('institutions', event.target.value)} placeholder="University name" className="mt-1 w-full px-3 py-2 text-xs bg-neutral-950 border border-neutral-800 rounded-xl text-white placeholder-neutral-500 focus:outline-none focus:border-emerald-500" />
+                </label>
               </div>
-
-              <button
-                type="submit"
-                disabled={!geminiQuery.trim() || isGeminiSearching}
-                className="px-5 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-neutral-950 font-bold text-xs transition-colors flex items-center justify-center gap-1.5 disabled:opacity-50 shadow-md shadow-emerald-500/10 shrink-0"
-              >
-                {isGeminiSearching ? (
-                  <>
-                    <Sparkles className="w-3.5 h-3.5 animate-spin" />
-                    <span>Searching...</span>
-                  </>
-                ) : (
-                  <>
-                    <Search className="w-3.5 h-3.5" />
-                    <span>Ask Gemini</span>
-                  </>
-                )}
-              </button>
+              <div className="flex flex-wrap items-center gap-2">
+                <button type="submit" disabled={isGeminiSearching} className="px-5 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-neutral-950 font-bold text-xs transition-colors flex items-center justify-center gap-1.5 disabled:opacity-50">
+                  {isGeminiSearching ? <Sparkles className="w-3.5 h-3.5 animate-spin" /> : <Search className="w-3.5 h-3.5" />}
+                  {isGeminiSearching ? 'Finding exact matches...' : 'Find matching candidates'}
+                </button>
+                <button type="button" onClick={() => void handleSaveSearchCriteria()} disabled={isSavingSearch || !Object.values(searchCriteria).some((value) => Array.isArray(value) ? value.length > 0 : Boolean(value))} className="px-4 py-2.5 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-neutral-200 text-xs font-semibold disabled:opacity-50">
+                  {isSavingSearch ? 'Saving...' : searchSaved ? 'Saved for matching alerts' : 'Save criteria for alerts'}
+                </button>
+              </div>
             </form>
-
-            {/* Quick Prompt Chips */}
-            <div className="flex flex-wrap items-center gap-1.5 pt-0.5 text-xs">
-              <span className="text-[11px] font-semibold text-neutral-400">Try prompts:</span>
-              <button
-                type="button"
-                onClick={() =>
-                  handleGeminiSearch(
-                    'Senior Backend Engineer with Master\'s degree, distributed systems, high concurrency, and transparent values'
-                  )
-                }
-                className="text-[11px] px-2.5 py-1 rounded-lg bg-neutral-950 hover:bg-neutral-800 text-neutral-300 border border-neutral-800 transition-colors hover:border-neutral-700"
-              >
-                ⚡ Backend Engineer with Master's & distributed systems
-              </button>
-
-              <button
-                type="button"
-                onClick={() =>
-                  handleGeminiSearch(
-                    'Product Designer from RISD or Stanford with empathy, accessibility WCAG AA, and design systems'
-                  )
-                }
-                className="text-[11px] px-2.5 py-1 rounded-lg bg-neutral-950 hover:bg-neutral-800 text-neutral-300 border border-neutral-800 transition-colors hover:border-neutral-700"
-              >
-                🎨 Product Designer with WCAG accessibility & empathy
-              </button>
-
-              <button
-                type="button"
-                onClick={() =>
-                  handleGeminiSearch(
-                    'Machine Learning or AI Engineer from MIT or Harvard who values open debate, PyTorch, and teamwork'
-                  )
-                }
-                className="text-[11px] px-2.5 py-1 rounded-lg bg-neutral-950 hover:bg-neutral-800 text-neutral-300 border border-neutral-800 transition-colors hover:border-neutral-700"
-              >
-                🤖 ML Engineer with foundation models & collaborative style
-              </button>
-            </div>
           </div>
 
-          {/* Clean Active Filter Status Pill (NO recruiter briefing card - results brought up directly) */}
+          {geminiError && (
+            <div role="alert" className="p-3 rounded-xl bg-red-950/40 border border-red-900 text-xs text-red-300">
+              {geminiError}
+            </div>
+          )}
+
+          <div className="rounded-2xl bg-neutral-900 border border-neutral-800 overflow-hidden">
+            <button
+              type="button"
+              onClick={() => setIsEmployerChatOpen((open) => !open)}
+              className="w-full flex items-center justify-between p-4 text-left hover:bg-neutral-800/50 transition-colors"
+              aria-expanded={isEmployerChatOpen}
+            >
+              <span className="flex items-center gap-2 text-xs font-bold text-white">
+                <MessageSquare className="w-4 h-4 text-emerald-400" />
+                Chat with the RAMPED assistant
+              </span>
+              <span className="text-[11px] text-neutral-400">{isEmployerChatOpen ? 'Close' : 'Open chat'}</span>
+            </button>
+            {isEmployerChatOpen && (
+              <div className="border-t border-neutral-800">
+                <div className="max-h-64 overflow-y-auto p-4 space-y-3">
+                  {employerChatMessages.map((message) => (
+                    <div
+                      key={message.id}
+                      className={`max-w-[90%] rounded-xl px-3 py-2 text-xs whitespace-pre-wrap ${
+                        message.role === 'user'
+                          ? 'ml-auto bg-blue-600 text-white'
+                          : message.isError
+                            ? 'bg-red-950/50 text-red-300 border border-red-900'
+                            : 'bg-neutral-950 text-neutral-200 border border-neutral-800'
+                      }`}
+                    >
+                      {message.content}
+                    </div>
+                  ))}
+                  {isEmployerChatLoading && (
+                    <div className="text-xs text-neutral-400">Gemini is thinking...</div>
+                  )}
+                </div>
+                <form
+                  className="flex gap-2 p-3 border-t border-neutral-800"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    void sendEmployerChatMessage();
+                  }}
+                >
+                  <input
+                    value={employerChatInput}
+                    onChange={(event) => setEmployerChatInput(event.target.value)}
+                    placeholder="Ask about RAMPED or clarify your search requirements..."
+                    className="flex-1 min-w-0 px-3 py-2 text-xs bg-neutral-950 border border-neutral-800 rounded-lg text-white placeholder-neutral-500 focus:outline-none focus:border-emerald-500"
+                  />
+                  <button
+                    type="submit"
+                    disabled={!employerChatInput.trim() || isEmployerChatLoading}
+                    className="px-3 py-2 rounded-lg bg-emerald-500 text-neutral-950 font-bold text-xs disabled:opacity-50"
+                  >
+                    <Send className="w-3.5 h-3.5" />
+                  </button>
+                </form>
+              </div>
+            )}
+          </div>
+
+          {/* Matched candidate results are randomized on the server. */}
           {geminiActive && (
             <div className="flex flex-wrap items-center justify-between gap-2 p-3 rounded-xl bg-neutral-950 border border-emerald-900/60 text-xs font-mono">
               <div className="flex items-center gap-2">
                 <Sparkles className="w-3.5 h-3.5 text-emerald-400" />
                 <span className="text-white">
-                  Natural Language Filter: <strong className="text-emerald-300">"{geminiQuery}"</strong>
+                  Criteria-matched candidates
                 </span>
                 <span className="text-[11px] text-neutral-400">
                   ({filteredCandidates.length} matched candidates)
                 </span>
               </div>
+              {searchCriteria && (
+                <span className="basis-full text-[11px] text-neutral-400">
+                  Applied exactly: {[
+                    ...searchCriteria.roles.map((value) => `Role: ${value}`),
+                    ...searchCriteria.degrees.map((value) => `Degree: ${value}`),
+                    ...searchCriteria.institutions.map((value) => `Institution: ${value}`),
+                    ...searchCriteria.skills.map((value) => `Skill: ${value}`),
+                    ...(searchCriteria.location ? [`Location: ${searchCriteria.location}`] : []),
+                    ...(searchCriteria.minimumYearsExperience !== null ? [`Experience: ${searchCriteria.minimumYearsExperience}+ years`] : []),
+                  ].join(' · ')}
+                </span>
+              )}
               <div className="flex items-center gap-2">
                 <button
                   onClick={handleClearGeminiSearch}
@@ -730,132 +846,9 @@ export const EmployerSearchPortal: React.FC = () => {
             </div>
           )}
 
-          {/* Manual Baseline Filters Panel */}
-          <div className="p-5 bg-neutral-900 border border-neutral-800 rounded-2xl space-y-4">
-            <div className="flex items-center justify-between text-xs">
-              <span className="font-bold text-neutral-200 uppercase tracking-wider text-[11px] font-mono">
-                Manual Discovery Filters
-              </span>
-              {geminiActive && (
-                <span className="text-[11px] text-emerald-400 font-mono">
-                  (Currently showing natural language search results)
-                </span>
-              )}
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-              {/* Category Dropdown */}
-              <div>
-                <label className="block text-xs font-semibold text-neutral-300 mb-1">
-                  Target Job Position Category
-                </label>
-                <select
-                  value={selectedCategory}
-                  onChange={(e) => {
-                    setSelectedCategory(e.target.value);
-                    setCurrentPage(1);
-                    if (geminiActive) setGeminiActive(false);
-                    setShuffleSalt((s) => s + 1);
-                  }}
-                  className="w-full px-3 py-2 text-xs bg-neutral-950 border border-neutral-800 rounded-lg text-white focus:outline-none focus:border-blue-500"
-                >
-                  <option value="All Categories">All Categories (Full Pool)</option>
-                  {JOB_CATEGORIES.map((cat) => (
-                    <option key={cat} value={cat}>
-                      {cat}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              {/* Baseline Degree Filter */}
-              <div>
-                <label className="block text-xs font-semibold text-neutral-300 mb-1">
-                  Required Verified Degree
-                </label>
-                <select
-                  value={selectedDegree}
-                  onChange={(e) => {
-                    setSelectedDegree(e.target.value);
-                    setCurrentPage(1);
-                    if (geminiActive) setGeminiActive(false);
-                    setShuffleSalt((s) => s + 1);
-                  }}
-                  className="w-full px-3 py-2 text-xs bg-neutral-950 border border-neutral-800 rounded-lg text-white focus:outline-none focus:border-blue-500"
-                >
-                  <option value="All Degrees">All Degree Levels</option>
-                  {DEGREE_TYPES.map((deg) => (
-                    <option key={deg} value={deg}>
-                      {deg}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              {/* Remote Status */}
-              <div>
-                <label className="block text-xs font-semibold text-neutral-300 mb-1">
-                  Workplace Preference
-                </label>
-                <select
-                  value={selectedRemote}
-                  onChange={(e) => {
-                    setSelectedRemote(e.target.value);
-                    setCurrentPage(1);
-                    if (geminiActive) setGeminiActive(false);
-                    setShuffleSalt((s) => s + 1);
-                  }}
-                  className="w-full px-3 py-2 text-xs bg-neutral-950 border border-neutral-800 rounded-lg text-white focus:outline-none focus:border-blue-500"
-                >
-                  <option value="All">Any Preference</option>
-                  <option value="remote_only">Remote Only</option>
-                  <option value="hybrid">Hybrid</option>
-                  <option value="onsite">Onsite Only</option>
-                </select>
-              </div>
-
-              {/* Location or Institution */}
-              <div>
-                <label className="block text-xs font-semibold text-neutral-300 mb-1">
-                  Location or Institution
-                </label>
-                <div className="relative">
-                  <input
-                    type="text"
-                    value={locationQuery}
-                    onChange={(e) => {
-                      setLocationQuery(e.target.value);
-                      setCurrentPage(1);
-                      if (geminiActive) setGeminiActive(false);
-                    }}
-                    placeholder="e.g. San Francisco or Stanford"
-                    className="w-full px-3 py-2 text-xs bg-neutral-950 border border-neutral-800 rounded-lg text-white placeholder-neutral-500 focus:outline-none focus:border-blue-500"
-                  />
-                  {locationQuery && (
-                    <button
-                      onClick={() => {
-                        setLocationQuery('');
-                        setCurrentPage(1);
-                      }}
-                      className="absolute right-2.5 top-2.5 text-neutral-500 hover:text-white text-xs"
-                    >
-                      ×
-                    </button>
-                  )}
-                </div>
-              </div>
-            </div>
-
-            {/* Fairness Engine Explainer Bar */}
-            <div className="pt-2 border-t border-neutral-800/60 flex flex-col sm:flex-row sm:items-center justify-between text-xs text-neutral-400 gap-2">
-              <div className="flex items-center gap-1.5 font-mono text-[11px] text-emerald-400">
-                <Shuffle className="w-3.5 h-3.5" />
-                <span>Fairness First Engine: Candidate order is mathematically randomized per query.</span>
-              </div>
-              <div className="text-[11px] text-neutral-500 font-mono">
-                {totalResults} verified candidates in active talent pool (14/30 inactive rule strictly enforced)
-              </div>
-            </div>
+          <div className="flex items-center gap-1.5 text-[11px] text-emerald-400 font-mono">
+            <Shuffle className="w-3.5 h-3.5" />
+            Candidates are filtered to your criteria, then presented in Fisher–Yates randomized order.
           </div>
 
           {/* Results Bar: List of 10 Indicator & Compare Trigger */}
@@ -893,7 +886,9 @@ export const EmployerSearchPortal: React.FC = () => {
               <GraduationCap className="w-8 h-8 text-neutral-500 mx-auto" />
               <h3 className="text-sm font-semibold text-white">No Matching Verified Candidates Found</h3>
               <p className="text-xs text-neutral-400 max-w-md mx-auto">
-                No active candidates meet these exact criteria. Try broadening your query or selecting "All Categories".
+                {geminiActive
+                  ? 'No active verified candidates meet all of these criteria. Adjust your requirements and search again.'
+                  : 'Enter your exact hiring criteria above to see randomized matches. RAMPED does not provide a browse-all-candidates list.'}
               </p>
             </div>
           ) : (

@@ -321,7 +321,7 @@ export const CandidateOnboardingModal: React.FC<CandidateOnboardingModalProps> =
   const handleGeminiDraft = async (toneOverride?: 'grounded' | 'collaborative' | 'curious') => {
     const activeTone = toneOverride || geminiTone;
     setIsGeminiLoading(true);
-    setGeminiStatus('Gemini is weaving your background and values into an authentic story...');
+    setGeminiStatus('Gemini is helping you tell the fullest, most authentic version of your story...');
 
     try {
       if (aboutMe.trim()) {
@@ -337,6 +337,7 @@ export const CandidateOnboardingModal: React.FC<CandidateOnboardingModalProps> =
         body: JSON.stringify({
           action: 'draft',
           tone: activeTone,
+          currentText: aboutMe,
           candidateContext: {
             name: name || 'Candidate',
             degreeTitle,
@@ -348,14 +349,16 @@ export const CandidateOnboardingModal: React.FC<CandidateOnboardingModalProps> =
 
       if (!res.ok) throw new Error('Failed to generate narrative');
       const data = await res.json();
-      if (data.narrative) {
+      if (data.needsInput && data.followUpQuestion) {
+        setGeminiStatus(`Gemini asks: ${data.followUpQuestion}`);
+      } else if (data.narrative) {
         setAboutMe(data.narrative);
-        setGeminiStatus('✨ Gemini drafted a new personal narrative! Feel free to customize or polish.');
+        setGeminiStatus('✨ Gemini shaped your details into a fuller, more vivid story. Review it and make it your own.');
         setTimeout(() => setGeminiStatus(null), 4000);
       }
     } catch (err: any) {
       console.warn('Gemini draft error:', err);
-      setGeminiStatus('✨ Applied intelligent narrative draft.');
+      setGeminiStatus('Gemini could not help with the draft right now. Your About Me text was not changed.');
       setTimeout(() => setGeminiStatus(null), 3000);
     } finally {
       setIsGeminiLoading(false);
@@ -402,7 +405,7 @@ export const CandidateOnboardingModal: React.FC<CandidateOnboardingModalProps> =
       }
     } catch (err: any) {
       console.warn('Gemini polish error:', err);
-      setGeminiStatus('✨ Narrative updated with improved flow.');
+      setGeminiStatus('Gemini could not polish the draft right now. Your About Me text was not changed.');
       setTimeout(() => setGeminiStatus(null), 3000);
     } finally {
       setIsGeminiLoading(false);
@@ -418,7 +421,7 @@ export const CandidateOnboardingModal: React.FC<CandidateOnboardingModalProps> =
     }
 
     setIsGeminiLoading(true);
-    setGeminiStatus('Gemini is evaluating your narrative against the 5 essential pillars...');
+    setGeminiStatus('Gemini is looking for places you could bring even more of your story to life...');
 
     try {
       const res = await fetch('/api/gemini/about-me-helper', {
@@ -784,7 +787,7 @@ export const CandidateOnboardingModal: React.FC<CandidateOnboardingModalProps> =
                   <div className="flex items-center gap-2">
                     <User className="w-4 h-4 text-amber-400" />
                     <h3 className="text-xs font-bold text-amber-300 uppercase tracking-wider font-mono">
-                      Tell Employers Who You Actually Are
+                      Tell Employers the Fuller Story of Who You Are
                     </h3>
                   </div>
                   <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-amber-950/80 text-amber-300 border border-amber-800/60">
@@ -792,7 +795,7 @@ export const CandidateOnboardingModal: React.FC<CandidateOnboardingModalProps> =
                   </span>
                 </div>
                 <p className="text-xs text-neutral-300 leading-relaxed">
-                  In RAMPED, employers don't just hire resumes—they hire people. Use this space to share your personal values, collaboration philosophy, intellectual curiosity, and what you love doing when you step away from the keyboard.
+                  This is your space to express the whole person behind your credentials. Share what matters to you, how you see the world, moments or interests that shaped you, how you connect with others, and anything that makes your perspective distinctly yours. Fragments are fine—Gemini can help you find the words, ask thoughtful follow-ups, and shape your details into a vivid story without making anything up.
                 </p>
               </div>
 
@@ -852,7 +855,7 @@ export const CandidateOnboardingModal: React.FC<CandidateOnboardingModalProps> =
                     className="px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-neutral-950 text-xs font-bold transition-colors flex items-center gap-1.5 shadow-sm shadow-amber-500/20 disabled:opacity-50"
                   >
                     <Sparkles className="w-3.5 h-3.5 fill-neutral-950" />
-                    <span>{aboutMe ? 'Draft Fresh with Gemini' : '✨ Draft with Gemini'}</span>
+                    <span>{aboutMe ? 'Reimagine My Story with Gemini' : '✨ Help Me Tell My Story'}</span>
                   </button>
 
                   <button
@@ -921,7 +924,7 @@ export const CandidateOnboardingModal: React.FC<CandidateOnboardingModalProps> =
                   value={aboutMe}
                   onChange={(e) => setAboutMe(e.target.value)}
                   onBlur={saveDraftNow}
-                  placeholder="Share who you are as a human being: your values, your collaboration style, what intellectual puzzles excite you, and what you love doing when you step away from work..."
+                  placeholder="Write freely—even fragments. What matters to you? What experiences, interests, or little details shaped who you are? Gemini can help you express the full story in your voice..."
                   className="w-full p-3.5 text-xs bg-neutral-950 border border-neutral-800 rounded-xl text-neutral-100 placeholder-neutral-500 focus:outline-none focus:border-amber-500 leading-relaxed font-sans"
                 />
               </div>
@@ -932,9 +935,12 @@ export const CandidateOnboardingModal: React.FC<CandidateOnboardingModalProps> =
                   <div className="flex items-center gap-2">
                     <ListChecks className="w-4 h-4 text-emerald-400" />
                     <span className="text-xs font-bold text-white uppercase tracking-wider font-mono">
-                      Checklist: What to Cover in Your 'About Me'
+                      Optional Ideas to Explore in Your Story
                     </span>
                   </div>
+                  <p className="text-[11px] text-neutral-500">
+                    These are inspiration, not requirements. Share only what feels true to you.
+                  </p>
                   <span
                     className={`text-[11px] font-mono font-bold px-2 py-0.5 rounded ${
                       coveredCount === 5
@@ -942,7 +948,7 @@ export const CandidateOnboardingModal: React.FC<CandidateOnboardingModalProps> =
                         : 'bg-neutral-900 text-neutral-400 border border-neutral-800'
                     }`}
                   >
-                    {coveredCount}/5 Pillars Addressed
+                    {coveredCount}/5 Optional Ideas Mentioned
                   </span>
                 </div>
 

@@ -10,6 +10,11 @@ import type { RequestHandler } from 'express';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { escapeHtml, sendTransactionalEmail } from './server/transactionalEmail';
 import { isValidPersonaSignature } from './server/personaVerification';
+import {
+  isExactCredentialCriteria,
+  matchesExactCredentialCriteria,
+  type ExactCredentialCriteria,
+} from './src/utils/exactCredentialSearch';
 
 dotenv.config();
 
@@ -879,6 +884,58 @@ async function startServer() {
     if (createError) throw createError;
     return created;
   };
+  const getEmployerManagerId = async (userId: string) => {
+    if (!supabaseAdmin) throw new Error('Marketplace storage is not configured.');
+    const { data: seat, error } = await supabaseAdmin
+      .from('employer_team_seats')
+      .select('manager_user_id')
+      .eq('member_user_id', userId)
+      .eq('status', 'active')
+      .maybeSingle();
+    if (error) throw error;
+    return seat?.manager_user_id || userId;
+  };
+  const requireActiveEmployer: RequestHandler = async (_req, res, next) => {
+    try {
+      const user = res.locals.authUser as User;
+      if (!isBetaAllowed(user)) {
+        return res.status(403).json({ error: 'This account is not on the private beta access list.' });
+      }
+      const profile = await getMarketplaceProfile(user);
+      if (!profile || profile.role !== 'employer' || profile.verification_status !== 'approved') {
+        return res.status(403).json({ error: 'An approved employer account is required.' });
+      }
+      if (!supabaseAdmin) {
+        return res.status(503).json({ error: 'Billing storage is not configured.' });
+      }
+      const managerUserId = await getEmployerManagerId(user.id);
+      const { data: billing, error } = await supabaseAdmin
+        .from('billing_accounts')
+        .select('subscription_status,subscription_tier,current_period_end')
+        .eq('user_id', managerUserId)
+        .maybeSingle();
+      if (error) throw error;
+      if (
+        !billing ||
+        !['active', 'trialing'].includes(billing.subscription_status) ||
+        new Date(billing.current_period_end || 0).getTime() <= Date.now()
+      ) {
+        return res.status(403).json({ error: 'An active employer subscription is required.' });
+      }
+      if (managerUserId !== user.id && billing.subscription_tier !== 'tier2') {
+        return res.status(403).json({ error: 'Team member access requires an active Tier 2 plan.' });
+      }
+      res.locals.marketplaceProfile = profile;
+      res.locals.employerManagerUserId = managerUserId;
+      res.locals.billingAccount = billing;
+      return next();
+    } catch (error) {
+      console.error('Active employer check failed:', error);
+      return res.status(503).json({ error: 'Unable to verify the employer subscription.' });
+    }
+  };
+  const productionActiveEmployerAccess: RequestHandler[] =
+    process.env.NODE_ENV === 'production' ? [requireUser, requireActiveEmployer] : [];
   const requireMarketplaceRole = (role: 'candidate' | 'employer' | 'admin'): RequestHandler =>
     async (_req, res, next) => {
       try {
@@ -940,7 +997,20 @@ async function startServer() {
       : [];
   const productionEmployerAccess: RequestHandler[] =
     process.env.NODE_ENV === 'production'
-      ? [requireUser, requireTier2Employer]
+      ? [requireUser, requireActiveEmployer]
+      : [];
+  const productionEmployerChatAccess: RequestHandler[] =
+    process.env.NODE_ENV === 'production'
+      ? [
+          requireUser,
+          requireMarketplaceRole('employer'),
+          (_req, res, next) => {
+            if (res.locals.marketplaceProfile?.verification_status !== 'approved') {
+              return res.status(403).json({ error: 'An approved employer account is required.' });
+            }
+            return next();
+          },
+        ]
       : [];
   const profileRecordToCandidate = (record: {
     user_id: string;
@@ -993,7 +1063,103 @@ async function startServer() {
     instantAlertsEnabled:
       (billing?.subscription_status === 'active' || billing?.subscription_status === 'trialing') &&
       new Date(String(billing.current_period_end || 0)).getTime() > Date.now(),
+    managerUserId: record.user_id,
+    savedSearchCriteria: record.profile.savedSearchCriteria,
+    monthlyMatchAlertsUsed: 0,
+    teamSeats: billing?.subscription_tier === 'tier2' ? 6 : 1,
   });
+  const notifyEmployersOfCandidateMatch = async (candidateRecord: {
+    user_id: string;
+    profile: Record<string, unknown>;
+    verification_status: string;
+    is_snoozed: boolean;
+    last_check_in_at: string;
+  }) => {
+    if (!supabaseAdmin || candidateRecord.verification_status !== 'verified' || candidateRecord.is_snoozed) return;
+    if (Date.now() - new Date(candidateRecord.last_check_in_at).getTime() >= 14 * 24 * 60 * 60 * 1000) return;
+
+    const { data: employerRows, error: employerError } = await supabaseAdmin
+      .from('marketplace_profiles')
+      .select('user_id,profile')
+      .eq('role', 'employer')
+      .eq('verification_status', 'approved');
+    if (employerError) throw employerError;
+    if (!employerRows?.length) return;
+    const { data: billingRows, error: billingError } = await supabaseAdmin
+      .from('billing_accounts')
+      .select('user_id,subscription_status,subscription_tier,current_period_end')
+      .in('user_id', (employerRows || []).map((row) => row.user_id));
+    if (billingError) throw billingError;
+
+    const currentMonthStart = new Date();
+    currentMonthStart.setUTCDate(1);
+    currentMonthStart.setUTCHours(0, 0, 0, 0);
+
+    for (const employer of employerRows || []) {
+      const billing = (billingRows || []).find((row) => row.user_id === employer.user_id);
+      if (
+        !billing ||
+        !['active', 'trialing'].includes(billing.subscription_status) ||
+        new Date(billing.current_period_end || 0).getTime() <= Date.now() ||
+        (billing.subscription_tier !== 'tier1' && billing.subscription_tier !== 'tier2')
+      ) continue;
+
+      const criteria = employer.profile.savedSearchCriteria as ExactCredentialCriteria | undefined;
+      if (!isExactCredentialCriteria(criteria)) continue;
+      if (!matchesExactCredentialCriteria(profileRecordToCandidate(candidateRecord, false), criteria)) continue;
+
+      const alertLimit = billing.subscription_tier === 'tier1' ? 10 : 20;
+      const { count, error: countError } = await supabaseAdmin
+        .from('marketplace_notifications')
+        .select('id', { count: 'exact', head: true })
+        .eq('user_id', employer.user_id)
+        .contains('payload', { type: 'candidate_match_alert' })
+        .gte('created_at', currentMonthStart.toISOString());
+      if (countError) throw countError;
+      if ((count || 0) >= alertLimit) continue;
+
+      const eventKey = `candidate-match:${employer.user_id}:${candidateRecord.user_id}:${candidateRecord.last_check_in_at}`;
+      const { data: alert, error: alertError } = await supabaseAdmin
+        .from('marketplace_notifications')
+        .upsert(
+          {
+            user_id: employer.user_id,
+            dedupe_key: eventKey,
+            payload: {
+              title: 'A candidate matches your saved criteria',
+              message: 'A newly verified or newly available candidate meets your role, skills, location, and experience requirements.',
+              type: 'candidate_match_alert',
+              metadata: { candidateId: candidateRecord.user_id },
+            },
+          },
+          { onConflict: 'dedupe_key', ignoreDuplicates: true }
+        )
+        .select('id')
+        .maybeSingle();
+      if (alertError) throw alertError;
+      if (!alert) continue;
+
+      const profile = employer.profile || {};
+      const recipient = typeof profile.email === 'string' ? profile.email : '';
+      if (!recipient) {
+        console.error(`Candidate match alert email skipped: employer ${employer.user_id} has no email address.`);
+        continue;
+      }
+      const company = typeof profile.companyName === 'string' ? profile.companyName : 'your team';
+      try {
+        await queueAndDeliverEmail({
+          userId: employer.user_id,
+          eventKey,
+          recipient,
+          subject: 'A verified candidate matches your RAMPED search',
+          html: `<p>Hello ${escapeHtml(typeof profile.recruiterName === 'string' ? profile.recruiterName : 'there')},</p><p>A newly verified or newly available candidate matches the saved search criteria for ${escapeHtml(company)}.</p><p>Sign in to RAMPED to run your criteria-based search and view the randomized matching results.</p>`,
+          text: `A newly verified or newly available candidate matches the saved search criteria for ${company}. Sign in to RAMPED to run your criteria-based search and view the randomized matching results.`,
+        });
+      } catch (emailError) {
+        console.error(`Candidate match alert email failed for employer ${employer.user_id}:`, emailError);
+      }
+    }
+  };
   const requireConfirmedEmail = (user: User, res: express.Response) => {
     if (!user.email_confirmed_at) {
       res.status(403).json({ error: 'Verify your email address before creating a marketplace profile.' });
@@ -1086,6 +1252,169 @@ async function startServer() {
       return res.status(403).json({ error: 'This email is not enabled for the private beta.' });
     }
     return res.json({ allowed: true });
+  });
+
+  app.get('/api/employer/team', ...productionActiveEmployerAccess, async (_req, res) => {
+    try {
+      if (!supabaseAdmin) return res.status(503).json({ error: 'Marketplace storage is not configured.' });
+      const user = res.locals.authUser as User;
+      const managerUserId = process.env.NODE_ENV === 'production'
+        ? res.locals.employerManagerUserId as string
+        : user.id;
+      const billing = res.locals.billingAccount as { subscription_tier?: string } | undefined;
+      if (billing?.subscription_tier !== 'tier2') {
+        return res.status(403).json({ error: 'Team seats are available on Tier 2.' });
+      }
+
+      const { data: manager, error: managerError } = await supabaseAdmin
+        .from('marketplace_profiles')
+        .select('profile')
+        .eq('user_id', managerUserId)
+        .single();
+      if (managerError) throw managerError;
+      const managerEmail = typeof manager.profile.email === 'string' ? manager.profile.email : user.email || '';
+      const { error: seatError } = await supabaseAdmin
+        .from('employer_team_seats')
+        .upsert(
+          {
+            manager_user_id: managerUserId,
+            member_user_id: managerUserId,
+            member_email: managerEmail.toLowerCase(),
+            seat_role: 'manager',
+            status: 'active',
+          },
+          { onConflict: 'manager_user_id,member_email' }
+        );
+      if (seatError) throw seatError;
+      const { data: seats, error } = await supabaseAdmin
+        .from('employer_team_seats')
+        .select('member_email,seat_role,status')
+        .eq('manager_user_id', managerUserId)
+        .order('created_at', { ascending: true });
+      if (error) throw error;
+      return res.json({ seats: seats || [], totalLimit: 6 });
+    } catch (error) {
+      console.error('Employer team lookup failed:', error);
+      return res.status(500).json({ error: 'Unable to load team seats.' });
+    }
+  });
+
+  app.post('/api/employer/team', ...productionActiveEmployerAccess, async (req, res) => {
+    try {
+      if (!supabaseAdmin) return res.status(503).json({ error: 'Marketplace storage is not configured.' });
+      const user = res.locals.authUser as User;
+      const managerUserId = process.env.NODE_ENV === 'production'
+        ? res.locals.employerManagerUserId as string
+        : user.id;
+      const billing = res.locals.billingAccount as { subscription_tier?: string } | undefined;
+      if (billing?.subscription_tier !== 'tier2' || managerUserId !== user.id) {
+        return res.status(403).json({ error: 'Only the Tier 2 manager can invite team members.' });
+      }
+      const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        return res.status(400).json({ error: 'Enter a valid team member email address.' });
+      }
+
+      const { data: manager, error: managerError } = await supabaseAdmin
+        .from('marketplace_profiles')
+        .select('profile')
+        .eq('user_id', managerUserId)
+        .single();
+      if (managerError) throw managerError;
+      const managerEmail = typeof manager.profile.email === 'string' ? manager.profile.email.toLowerCase() : '';
+      if (email === managerEmail) return res.status(400).json({ error: 'The manager already occupies one of the six seats.' });
+
+      const { error: managerSeatError } = await supabaseAdmin
+        .from('employer_team_seats')
+        .upsert(
+          {
+            manager_user_id: managerUserId,
+            member_user_id: managerUserId,
+            member_email: managerEmail,
+            seat_role: 'manager',
+            status: 'active',
+          },
+          { onConflict: 'manager_user_id,member_email' }
+        );
+      if (managerSeatError) throw managerSeatError;
+      const { count, error: countError } = await supabaseAdmin
+        .from('employer_team_seats')
+        .select('id', { count: 'exact', head: true })
+        .eq('manager_user_id', managerUserId);
+      if (countError) throw countError;
+      if ((count || 0) >= 6) return res.status(409).json({ error: 'Tier 2 includes six total seats, including the manager.' });
+
+      const inviteResult = await supabaseAdmin.auth.admin.inviteUserByEmail(email, {
+        data: { account_role: 'employer' },
+      });
+      if (inviteResult.error) {
+        return res.status(409).json({
+          error: 'Could not invite this email. It may already have a RAMPED account or an outstanding invite.',
+        });
+      }
+      const memberId = inviteResult.data.user.id;
+      const memberName = email.split('@')[0].replace(/[._-]+/g, ' ');
+      const memberProfile = {
+        ...manager.profile,
+        id: memberId,
+        email,
+        recruiterName: memberName,
+        recruiterTitle: 'Team Member',
+        savedSearchCriteria: manager.profile.savedSearchCriteria || null,
+      };
+      const { error: profileError } = await supabaseAdmin
+        .from('marketplace_profiles')
+        .insert({
+          user_id: memberId,
+          role: 'employer',
+          profile: memberProfile,
+          verification_status: 'approved',
+        });
+      if (profileError) throw profileError;
+      const { error: seatError } = await supabaseAdmin
+        .from('employer_team_seats')
+        .insert({
+          manager_user_id: managerUserId,
+          member_user_id: memberId,
+          member_email: email,
+          seat_role: 'member',
+          status: 'active',
+        });
+      if (seatError) throw seatError;
+      return res.status(201).json({ email, role: 'member', status: 'active' });
+    } catch (error) {
+      console.error('Employer team invitation failed:', error);
+      return res.status(500).json({ error: 'Unable to invite this team member.' });
+    }
+  });
+
+  app.put('/api/employer/search-criteria', ...productionActiveEmployerAccess, async (req, res) => {
+    try {
+      if (!supabaseAdmin) return res.status(503).json({ error: 'Marketplace storage is not configured.' });
+      if (req.body?.criteria !== null && !isExactCredentialCriteria(req.body?.criteria)) {
+        return res.status(400).json({ error: 'Saved candidate search criteria are invalid.' });
+      }
+      const user = res.locals.authUser as User;
+      const managerUserId = process.env.NODE_ENV === 'production'
+        ? res.locals.employerManagerUserId as string
+        : user.id;
+      const { data: manager, error: managerError } = await supabaseAdmin
+        .from('marketplace_profiles')
+        .select('profile')
+        .eq('user_id', managerUserId)
+        .single();
+      if (managerError) throw managerError;
+      const profile = { ...manager.profile, savedSearchCriteria: req.body.criteria };
+      const { error } = await supabaseAdmin
+        .from('marketplace_profiles')
+        .update({ profile, updated_at: new Date().toISOString() })
+        .eq('user_id', managerUserId);
+      if (error) throw error;
+      return res.json({ ok: true });
+    } catch (error) {
+      console.error('Employer search criteria save failed:', error);
+      return res.status(500).json({ error: 'Unable to save candidate search criteria.' });
+    }
   });
 
   app.get('/api/account/export', requireUser, async (_req, res) => {
@@ -1449,35 +1778,43 @@ async function startServer() {
 
       const candidates: ReturnType<typeof profileRecordToCandidate>[] = [];
       const employers: ReturnType<typeof profileRecordToEmployer>[] = [];
+      let employerManagerUserId = user.id;
       if (own.role === 'candidate') {
         if (own.profile && Object.keys(own.profile).length) {
           candidates.push(profileRecordToCandidate(own, true));
         }
       } else if (own.role === 'employer') {
+        const managerUserId = await getEmployerManagerId(user.id);
+        employerManagerUserId = managerUserId;
+        const { data: managerProfile, error: managerProfileError } = await supabaseAdmin
+          .from('marketplace_profiles')
+          .select('user_id,profile,verification_status')
+          .eq('user_id', managerUserId)
+          .maybeSingle();
+        if (managerProfileError) throw managerProfileError;
         const { data: billing, error: billingError } = await supabaseAdmin
           .from('billing_accounts')
           .select('stripe_customer_id,stripe_subscription_id,subscription_status,subscription_tier,subscription_cadence,current_period_end,alert_categories')
-          .eq('user_id', user.id)
+          .eq('user_id', managerUserId)
           .maybeSingle();
         if (billingError) throw billingError;
-        employers.push(profileRecordToEmployer(own, billing));
-
-        if (
-          own.verification_status === 'approved' &&
-          billing &&
-          ['active', 'trialing'].includes(String(billing.subscription_status)) &&
-          new Date(String(billing.current_period_end || 0)).getTime() > Date.now()
-        ) {
-          const { data: candidateRows, error: candidateError } = await supabaseAdmin
-            .from('marketplace_profiles')
-            .select('user_id,profile,verification_status,is_snoozed,last_check_in_at,created_at')
-            .eq('role', 'candidate')
-            .eq('verification_status', 'verified')
-            .eq('is_snoozed', false)
-            .gte('last_check_in_at', new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString());
-          if (candidateError) throw candidateError;
-          candidates.push(...(candidateRows || []).map((record) => profileRecordToCandidate(record, false)));
-        }
+        const employerProfile = managerProfile || own;
+        const monthStart = new Date();
+        monthStart.setUTCDate(1);
+        monthStart.setUTCHours(0, 0, 0, 0);
+        const { count: monthlyMatchAlertsUsed, error: alertsCountError } = await supabaseAdmin
+          .from('marketplace_notifications')
+          .select('id', { count: 'exact', head: true })
+          .eq('user_id', managerUserId)
+          .contains('payload', { type: 'candidate_match_alert' })
+          .gte('created_at', monthStart.toISOString());
+        if (alertsCountError) throw alertsCountError;
+        employers.push({
+          ...profileRecordToEmployer(employerProfile, billing),
+          id: user.id,
+          managerUserId,
+          monthlyMatchAlertsUsed: monthlyMatchAlertsUsed || 0,
+        });
       } else if (own.role === 'admin') {
         const { data: rows, error: profileError } = await supabaseAdmin
           .from('marketplace_profiles')
@@ -1497,9 +1834,20 @@ async function startServer() {
         }
       }
 
+      const { data: teamMembers, error: teamError } = own.role === 'employer'
+        ? await supabaseAdmin
+            .from('employer_team_seats')
+            .select('member_user_id')
+            .eq('manager_user_id', employerManagerUserId)
+            .eq('status', 'active')
+        : { data: [], error: null };
+      if (teamError) throw teamError;
       const inviteQuery = own.role === 'candidate'
         ? supabaseAdmin.from('job_invites').select('id,profile,status,candidate_contacted_externally,candidate_archived,viewed_by_candidate,created_at').eq('candidate_user_id', user.id)
-        : supabaseAdmin.from('job_invites').select('id,profile,status,candidate_contacted_externally,candidate_archived,viewed_by_candidate,created_at').eq('employer_user_id', user.id);
+        : supabaseAdmin.from('job_invites').select('id,profile,status,candidate_contacted_externally,candidate_archived,viewed_by_candidate,created_at').in(
+            'employer_user_id',
+            [...new Set([employerManagerUserId, ...(teamMembers || []).map((seat) => seat.member_user_id).filter((id): id is string => Boolean(id))])]
+          );
       const { data: inviteRows, error: inviteError } = await inviteQuery.order('created_at', { ascending: false });
       if (inviteError) throw inviteError;
       const jobInvites = (inviteRows || []).map((record) => ({
@@ -1609,6 +1957,14 @@ async function startServer() {
         id: user.id,
         email: user.email || '',
       };
+      if (
+        existing.role === 'employer' &&
+        submittedProfile.savedSearchCriteria !== undefined &&
+        submittedProfile.savedSearchCriteria !== null &&
+        !isExactCredentialCriteria(submittedProfile.savedSearchCriteria)
+      ) {
+        return res.status(400).json({ error: 'Saved candidate search criteria are invalid.' });
+      }
       if (existing.role === 'employer') delete profile.taxId;
       if (requiresReverification && existing.role === 'employer') {
         const { error: supersedeError } = await supabaseAdmin
@@ -1633,6 +1989,15 @@ async function startServer() {
         })
         .eq('user_id', user.id);
       if (error) throw error;
+      if (existing.role === 'candidate' && verificationStatus === 'verified') {
+        const { data: candidate, error: candidateError } = await supabaseAdmin
+          .from('marketplace_profiles')
+          .select('user_id,profile,verification_status,is_snoozed,last_check_in_at')
+          .eq('user_id', user.id)
+          .single();
+        if (candidateError) throw candidateError;
+        await notifyEmployersOfCandidateMatch(candidate);
+      }
       return res.json({ ok: true });
     } catch (error) {
       console.error('Marketplace profile update failed:', error);
@@ -1659,10 +2024,11 @@ async function startServer() {
       ) {
         return res.status(403).json({ error: 'Employer verification and a valid job invite are required.' });
       }
+      const managerUserId = await getEmployerManagerId(user.id);
       const { data: billing, error: billingError } = await supabaseAdmin
         .from('billing_accounts')
         .select('subscription_status,subscription_tier,current_period_end')
-        .eq('user_id', user.id)
+        .eq('user_id', managerUserId)
         .maybeSingle();
       if (billingError) throw billingError;
       if (
@@ -1675,10 +2041,17 @@ async function startServer() {
       const monthStart = new Date();
       monthStart.setUTCDate(1);
       monthStart.setUTCHours(0, 0, 0, 0);
+      const { data: teamSeats, error: seatsError } = await supabaseAdmin
+        .from('employer_team_seats')
+        .select('member_user_id')
+        .eq('manager_user_id', managerUserId)
+        .eq('status', 'active');
+      if (seatsError) throw seatsError;
+      const teamUserIds = [...new Set([managerUserId, ...(teamSeats || []).map((seat) => seat.member_user_id).filter(Boolean)])];
       const { count, error: quotaError } = await supabaseAdmin
         .from('job_invites')
         .select('id', { count: 'exact', head: true })
-        .eq('employer_user_id', user.id)
+        .in('employer_user_id', teamUserIds)
         .gte('created_at', monthStart.toISOString());
       if (quotaError) throw quotaError;
       if (billing.subscription_tier === 'tier1' && (count || 0) >= 25) {
@@ -1701,11 +2074,17 @@ async function startServer() {
         return res.status(404).json({ error: 'That candidate is no longer available for discovery.' });
       }
       const candidateProfile = candidate.profile || {};
-      const employerProfile = employer.profile || {};
+      const { data: managerProfile, error: managerProfileError } = await supabaseAdmin
+        .from('marketplace_profiles')
+        .select('profile')
+        .eq('user_id', managerUserId)
+        .single();
+      if (managerProfileError) throw managerProfileError;
+      const employerProfile = managerProfile.profile || employer.profile || {};
       const persistedInvite = {
         ...invite,
         id: undefined,
-        employerId: user.id,
+        employerId: managerUserId,
         employerCompanyName: employerProfile.companyName || '',
         candidateId: candidate.user_id,
         candidateName: candidateProfile.name || '',
@@ -1724,7 +2103,7 @@ async function startServer() {
       const { data: newInvite, error: inviteError } = await supabaseAdmin
         .from('job_invites')
         .insert({
-          employer_user_id: user.id,
+          employer_user_id: managerUserId,
           candidate_user_id: candidate.user_id,
           profile: persistedInvite,
         })
@@ -1824,6 +2203,13 @@ async function startServer() {
         .update({ last_check_in_at: new Date().toISOString(), updated_at: new Date().toISOString() })
         .eq('user_id', user.id);
       if (error) throw error;
+      const { data: candidate, error: candidateError } = await supabaseAdmin
+        .from('marketplace_profiles')
+        .select('user_id,profile,verification_status,is_snoozed,last_check_in_at')
+        .eq('user_id', user.id)
+        .single();
+      if (candidateError) throw candidateError;
+      await notifyEmployersOfCandidateMatch(candidate);
       const { error: notificationError } = await supabaseAdmin
         .from('marketplace_notifications')
         .insert({
@@ -1879,7 +2265,7 @@ async function startServer() {
       }
       const { data: target, error: targetError } = await supabaseAdmin
         .from('marketplace_profiles')
-        .select('user_id,role,profile')
+        .select('user_id,role,profile,verification_status,is_snoozed,last_check_in_at')
         .eq('user_id', userId)
         .in('role', ['candidate', 'employer'])
         .maybeSingle();
@@ -1914,6 +2300,15 @@ async function startServer() {
           },
         });
       if (notificationError) throw notificationError;
+      if (target.role === 'candidate' && approved) {
+        await notifyEmployersOfCandidateMatch({
+          user_id: target.user_id,
+          profile,
+          verification_status: status,
+          is_snoozed: target.is_snoozed,
+          last_check_in_at: target.last_check_in_at,
+        });
+      }
       let emailStatus: 'sent' | 'queued' | 'failed' | 'not_available' = 'not_available';
       const recipient = typeof target.profile.email === 'string' ? target.profile.email : '';
       if (recipient) {
@@ -2036,14 +2431,18 @@ async function startServer() {
         : requestedCandidateContext;
 
       const systemInstruction = `You are Gemini Career Studio for RAMPED (Recruiter & Applicant Matching Platform for Employment and Discovery).
-Your mission is to empower passive talent who hold verified academic credentials.
+Your mission is to empower passive talent who hold verified academic credentials. Be a creative, perceptive partner who helps candidates express themselves clearly and fully.
+RESUME SAFETY RULE: Never invent, add, remove, or change a candidate's facts, qualifications, employers, dates, achievements, or metrics. When asked to work on a resume, make only spelling, grammar, punctuation, capitalization, and formatting corrections. Do not rewrite or paraphrase. If the candidate has not provided resume text, ask them to paste it; do not generate a sample resume or bullets. Return only the corrected supplied text, without an introduction or extra suggestions.
 You MUST recognize which document format the candidate is asking for and strictly enforce these format definitions. Never mix up or blend their formats!
 
 CRITICAL FORMAT SPECIFICATIONS & RULES:
 
 1. AUTHENTIC "ABOUT ME" SECTIONS (Personal Narrative):
-   - FORMAT: 2 to 3 fluid, paragraph-based first-person prose blocks (around 150-250 words total). Written from the heart ("I am...", "Beyond technical systems...").
-   - CONTENT: Core personal values, collaboration philosophy, curiosity, passions/hobbies outside of work, and ideal team culture.
+   - Your role is to be a creative, perceptive writing partner who helps the candidate express their full, distinctive self—not merely proofread or compress what they wrote. Actively help them discover what they want to say; do not make them do all the writing alone.
+   - FORMAT: When there is enough material, shape it into a complete, engaging first-person narrative, usually 2 to 3 fluid paragraphs (about 150-250 words, or longer when the candidate asks). Develop the candidate's meaning fully; do not make the result feel like a short template or checklist.
+   - CONTENT: Draw out the candidate's actual perspective, motivations, values, collaboration style, curiosity, defining moments, interests, and hopes. Bring forward meaningful specifics and connect them into a natural story. Use vivid, original phrasing and a confident human voice; avoid cliches, generic filler, and résumé-like lists.
+   - Be an active interviewer and creative coach: ask one thoughtful, open-ended follow-up at a time when more detail would make the story more personal or complete. Offer optional prompts, perspectives, or angles to help the candidate find words and explore their story, but never present those suggestions as facts about them. Once you have enough, do the creative writing work and give them a complete draft to react to.
+   - Use only details the candidate actually shared. Do not infer or invent their values, personality, hobbies, preferences, motivations, or life experiences from their degree, school, job category, or name. Do not turn a possibility or writing suggestion into a claim.
    - ABSOLUTE PROHIBITIONS:
      * NEVER start with a letter salutation or greeting (e.g., "Dear Hiring Team", "Dear Recruiter", "Dear Hiring Manager").
      * NEVER include a formal letter closing or sign-off (e.g., "Warm regards,", "Sincerely,", "Respectfully,", followed by candidate name).
@@ -2060,11 +2459,7 @@ CRITICAL FORMAT SPECIFICATIONS & RULES:
      * MUST end with a formal closing and candidate signature block (e.g., "Sincerely,\n[Name]\n[Email]").
 
 3. RESUME SUMMARY & EXPERIENCE BULLETS:
-   - FORMAT: High-impact technical experience bullet points or a single 2-sentence executive summary.
-   - MUSTS:
-     * MUST use the Google XYZ formula ("Accomplished [X], as measured by [Y], by doing [Z]") to quantify accomplishments with clear metric numbers.
-     * MUST be structured, performance-focused, and technically concise.
-     * MUST NOT contain conversational stories about hobbies or ideal cultures.
+   - Only proofread and format the candidate's supplied text, following the RESUME SAFETY RULE above.
 
 Candidate Context:
 - Name: ${candidateContext?.name || 'Candidate'}
@@ -2075,7 +2470,7 @@ Candidate Context:
 - Current 'About Me' text: ${candidateContext?.aboutMe || 'Not provided yet'}
 - Current Cover Letter: ${candidateContext?.coverLetterText || 'Not provided yet'}
 
-Always provide structured, clear, and actionable feedback. When drafting or editing text, provide a clean, ready-to-copy code block or highlighted draft so the candidate can apply it directly to their RAMPED profile with 1 click.`;
+Always provide structured, clear, and actionable feedback. Resume corrections must preserve the candidate's meaning and claims.`;
 
       // If Gemini API is available on server, call it via official @google/genai SDK
       if (ai) {
@@ -2111,7 +2506,11 @@ Always provide structured, clear, and actionable feedback. When drafting or edit
           if (!replyText) {
             throw lastErr || new Error('All Gemini models failed for Career Studio');
           }
-          return res.json({ text: replyText, modelUsed: usedModel });
+          return res.json({
+            text: replyText,
+            modelUsed: usedModel,
+            needsInput: taskMode === 'about_me' && replyText.trim().endsWith('?'),
+          });
         } catch (apiError: any) {
           console.error('Career Studio: all Gemini models failed:', apiError?.message);
           return res.status(503).json({
@@ -2121,21 +2520,17 @@ Always provide structured, clear, and actionable feedback. When drafting or edit
         }
       }
 
-      // Fallback ONLY when no Gemini API key is configured at all
+      // Do not fabricate resume content when the AI service is not configured.
+      if (taskMode === 'resume') {
+        return res.status(503).json({ error: 'Resume proofreading is temporarily unavailable. Please try again later.' });
+      }
+
       const lastMessage = messages[messages.length - 1].content.toLowerCase();
       let fallbackText = '';
-
+      let needsInput = false;
       if (lastMessage.includes('about me') || taskMode === 'about_me') {
-        fallbackText = `Here is a compelling, human-centered **"About Me"** draft tailored to your background as a verified **${candidateContext?.degreeTitle || 'Engineer'}** from **${candidateContext?.institution || 'your university'}**:
-
-### Suggested "About Me" Draft:
-> "Beyond engineering systems and technical milestones, I'm someone who thrives at the intersection of curiosity, craft, and collaboration. I believe the best technical work happens when teams foster psychological safety, celebrate intellectual humility, and treat documentation as an act of kindness.
->
-> When I step away from the keyboard, you'll usually find me exploring local hiking trails, experimenting with artisanal coffee brewing, and volunteering at community tech workshops.
-> 
-> What I value most in a team is transparent feedback, blameless problem-solving, and building software that respects both user privacy and accessibility."
-
-💡 *Tip: Click the **"Apply to My Profile"** button below to save this directly to your RAMPED "About Me" section!*`;
+        fallbackText = `I'd love to help you tell the fullest version of your story in your own voice. What matters most to you in how you work, connect with people, or spend your time—and is there a small example that shows it? Share it however it comes to mind; I'll help you find the words.`;
+        needsInput = true;
       } else if (lastMessage.includes('cover letter') || taskMode === 'cover_letter') {
         fallbackText = `Here is a tailored, executive cover letter highlighting your verified academic degree and engineering experience:
 
@@ -2151,28 +2546,13 @@ What attracts me to your engineering organization is your commitment to technica
 Warm regards,  
 **${candidateContext?.name || 'Your Name'}**  
 ${candidateContext?.email || 'email@example.com'}`;
-      } else if (lastMessage.includes('resume') || taskMode === 'resume') {
-        fallbackText = `### Resume Bullet Point Optimization (Google XYZ Formula)
-
-Here is how you can level up your resume experience bullet points for maximum recruiter impact:
-
-1. **Before:** "Worked on backend services and database optimizations."  
-   **After (XYZ Formula):** *"Architected and deployed 4 distributed microservices handling 45k req/sec, reducing p99 latency by 38% through Redis caching and query indexing."*
-
-2. **Before:** "Helped team improve CI/CD build speeds."  
-   **After (XYZ Formula):** *"Redesigned continuous integration pipelines in Docker and GitHub Actions, cutting staging deployment cycle times from 24 mins to 6 mins."*
-
-3. **Suggested Profile Summary:**  
-   *"Impact-driven ${candidateContext?.targetCategories?.[0] || 'Software Engineer'} with verified academic credentials from ${candidateContext?.institution || 'University'}. Track record of scaling distributed architectures, optimizing database throughput, and fostering collaborative engineering practices."*
-
-Would you like me to tailor these points further for a specific job title or company?`;
       } else {
         fallbackText = `Hello ${candidateContext?.name || 'there'}! I am **Gemini Career Studio** on RAMPED.
 
 I can assist you with:
 - 📝 **Tweaking your resume:** Rewriting bullets to highlight quantified impact and technical depth.
 - ✉️ **Crafting personalized cover letters:** Direct, compelling letters tailored to your target job categories.
-- 💡 **Writing your 'About Me' section:** Sharing your human values, working style, and passions beyond pure technical credentials.
+- 💡 **Writing your 'About Me' section:** Exploring what makes you distinctive and shaping it into a vivid, authentic personal story.
 - 🎯 **Evaluating direct recruiter invites:** Analyzing compensation ranges and formulating replies.
 
 What would you like to work on first?`;
@@ -2182,6 +2562,7 @@ What would you like to work on first?`;
         text: fallbackText,
         modelUsed: model,
         fallbackMode: true,
+        needsInput,
       });
     } catch (err: any) {
       console.error('Gemini chat route error:', err);
@@ -2212,7 +2593,6 @@ What would you like to work on first?`;
         return res.status(400).json({ error: 'Narrative text or custom instructions exceed allowed limits.' });
       }
 
-      const candName = candidateContext.name || 'Candidate';
       const candMajor = candidateContext.degreeTitle || 'Computer Science';
       const candSchool = candidateContext.institution || 'University';
       const candCategories = candidateContext.targetCategories || ['Full-Stack Software Engineer'];
@@ -2250,25 +2630,23 @@ What would you like to work on first?`;
       if (ai) {
         try {
           if (action === 'draft') {
+            const suppliedDetails = `${currentText} ${customInstruction}`.trim();
+            if (!suppliedDetails) {
+              return res.json({
+                action,
+                needsInput: true,
+                followUpQuestion: 'What matters most to you in how you work, connect with people, or spend your time—and is there a small example that shows it? Share it however it comes to mind; I will help you find the words.',
+              });
+            }
             const systemPrompt = `You are the Gemini Personal Narrative Writer on RAMPED (Recruiter & Applicant Matching Platform for Employment and Discovery).
-Your goal is to write a warm, genuine, human 'About Me' narrative for a candidate that showcases who they are beyond their resume trophies.
-The narrative must naturally touch upon the 5 essential checklist pillars:
-1. Core values and work philosophy (e.g. intellectual humility, craft integrity).
-2. Collaboration and communication style (e.g. team feedback, psychological safety).
-3. Curiosity and problem-solving mindset (what kinds of challenges ignite them).
-4. Life beyond work: authentic hobbies, passions, or creative outlets.
-5. Ideal team culture where they thrive.
-
-Guidelines:
-- Tone: ${tone} (Warm, confident, authentic, zero corporate robotic cliches like 'synergy' or 'rockstar').
-- Length: 2 to 3 engaging paragraphs (around 150-250 words).
-- Return ONLY the clean narrative text without markdown headers, titles, or quotes.`;
+Be an imaginative, thoughtful writing partner: help the candidate express the fullest, most distinctive version of who they are, beyond résumé facts. Use warm, fresh, vivid language that brings out their meaning and voice; avoid clichés, generic filler, and checklist-like writing. Develop the story into a complete, well-shaped About Me narrative (usually 2-3 paragraphs and about 150-250 words, or longer if requested), connecting the details they shared rather than merely restating them.
+Actively help them discover what to say. If more detail would make the story more genuine or complete, ask one thoughtful, open-ended follow-up question at a time. Offer optional prompts or examples as inspiration, clearly not as claims about them.
+Use only personal details the candidate actually supplied. Never infer or invent their values, personality, hobbies, preferences, motivations, or life experiences from their degree, school, job category, or name. Profile credentials are context, not evidence about their personal character. Do not present suggested possibilities as facts. Tone: ${tone}. Return only the question or finished narrative.`;
 
             const userPrompt = `Candidate profile context:
-- Name: ${candName}
 - Primary Field: ${primaryCategory}
 - Verified Academic Background: ${candMajor} from ${candSchool}
-- Additional Guidance / Notes: ${customInstruction || 'Write an authentic, human story that balances technical curiosity with warm team collaboration and personal hobbies.'}`;
+- Candidate-provided About Me details or draft: ${suppliedDetails}`;
 
             const response = await ai.models.generateContent({
               model,
@@ -2279,16 +2657,19 @@ Guidelines:
               },
             });
 
-            const narrative = response.text?.trim() || '';
+            const narrative = response.text?.trim();
+            if (!narrative) {
+              return res.status(503).json({ error: 'The About Me assistant returned no text. Please try again.' });
+            }
+            if (narrative.endsWith('?')) {
+              return res.json({ action, needsInput: true, followUpQuestion: narrative, modelUsed: model });
+            }
             return res.json({ narrative, action, modelUsed: model });
           } else if (action === 'polish') {
-            const systemPrompt = `You are the Gemini Personal Narrative Editor on RAMPED.
-Take the candidate's existing 'About Me' draft and polish it:
-- Elevate flow, rhythm, and storytelling.
-- Retain their authentic human voice and personal details (do not erase their specific hobbies or personality).
-- Remove hollow corporate buzzwords and robotic phrasing.
-- Ensure it touches upon core values, collaboration style, and passions outside work.
-- Return ONLY the polished narrative text without surrounding quotes or conversational remarks.`;
+            const systemPrompt = `You are a creative, perceptive About Me editor on RAMPED. Help the candidate express their full meaning and individuality, not just correct sentences. Reshape the supplied details into a complete, engaging first-person narrative with vivid, natural phrasing, strong flow, and the candidate's voice. Preserve every fact and the candidate's intended meaning; do not invent personal claims or generic filler. You may draw out implications already plainly present, but do not add details. Keep meaningful nuance and specific examples; do not force a checklist. Return only the polished narrative.`;
+            if (!currentText.trim()) {
+              return res.status(400).json({ error: 'Provide an About Me draft to polish.' });
+            }
 
             const response = await ai.models.generateContent({
               model,
@@ -2297,7 +2678,7 @@ Take the candidate's existing 'About Me' draft and polish it:
                   role: 'user',
                   parts: [
                     {
-                      text: `Candidate: ${candName} (${primaryCategory})\nTone: ${tone}\nCurrent Draft:\n"${currentText}"\nOptional Request: ${customInstruction}`,
+                      text: `Candidate field: ${primaryCategory}\nTone: ${tone}\nCurrent Draft:\n"${currentText}"\nOptional Request: ${customInstruction}`,
                     },
                   ],
                 },
@@ -2308,16 +2689,21 @@ Take the candidate's existing 'About Me' draft and polish it:
               },
             });
 
-            const polished = response.text?.trim() || currentText;
+            const polished = response.text?.trim();
+            if (!polished) {
+              return res.status(503).json({ error: 'The About Me assistant returned no text. Please try again.' });
+            }
             return res.json({ narrative: polished, action, modelUsed: model });
           } else if (action === 'evaluate') {
-            const systemPrompt = `You are the Gemini Career Evaluation Engine on RAMPED.
-Analyze the provided 'About Me' personal narrative against these 5 checklist pillars:
+            const systemPrompt = `You are the Gemini About Me Story Coach on RAMPED.
+Review the narrative for optional areas that might help the candidate express more of their distinctive self. These are reflection prompts, not requirements; a strong About Me does not need to cover all five:
 1. values: Core Values & Work Philosophy
 2. collaboration: Collaboration & Communication Style
 3. curiosity: Curiosity & Problem-Solving Mindset
 4. passions: Life Beyond Work (Passions & Hobbies)
 5. culture_fit: Ideal Team Culture & Environment
+
+Only mark an area covered when the candidate's own words support it. Feedback should be warm and specific, treat uncovered areas as optional openings for more expression, and never tell the candidate to invent details.
 
 Output strictly valid JSON with this format:
 {
@@ -2329,7 +2715,7 @@ Output strictly valid JSON with this format:
     { "id": "culture_fit", "covered": true|false, "feedback": "..." }
   ],
   "overallScore": 85,
-  "summaryTip": "One concise tip to make the narrative even stronger."
+  "summaryTip": "One concise, encouraging suggestion for an optional way to add more of the candidate's own perspective."
 }`;
 
             const response = await ai.models.generateContent({
@@ -2346,58 +2732,31 @@ Output strictly valid JSON with this format:
             return res.json({
               checklist: parsed.checklist || [],
               overallScore: parsed.overallScore || 75,
-              summaryTip: parsed.summaryTip || 'Strong start! Consider adding an outdoor hobby or creative outlet to round out the personal side.',
+              summaryTip: parsed.summaryTip || 'Consider sharing one specific example or preference in your own words.',
               modelUsed: model,
             });
           }
         } catch (apiErr: any) {
-          console.warn('Gemini About-Me helper call failed, using intelligent fallback:', apiErr?.message);
+          console.warn('Gemini About-Me helper call failed:', apiErr?.message);
+          if (action === 'draft' || action === 'polish') {
+            return res.status(503).json({ error: 'The About Me assistant is temporarily unavailable.' });
+          }
         }
       }
 
-      // Contextual High-Fidelity Fallback Logic
-      if (action === 'draft') {
-        let draftText = '';
-        if (tone === 'collaborative') {
-          draftText = `Beyond engineering architecture and code commits, I believe great software is fundamentally a team sport. Having studied ${candMajor} at ${candSchool}, I learned early on that the best technical breakthroughs emerge when teams foster psychological safety, active listening, and open intellectual debate.
-
-In my day-to-day work, I prioritize blameless incident retrospectives, clear asynchronous documentation, and mentorship. I love partnering closely with product managers and designers to understand the "why" behind every feature before writing a single line of implementation.
-
-When I step away from the keyboard, you'll usually find me experimenting with pour-over coffee recipes, playing board games with friends, and hiking local state trails. I do my best work with teams that value high empathy, continuous learning, and building software that genuinely respects user privacy.`;
-        } else if (tone === 'curious') {
-          draftText = `I'm an engineer driven by relentless curiosity and a passion for deep systems craft. Whether scaling high-throughput pipelines or optimizing distributed query performance, what excites me most is dissecting complex, ambiguous technical puzzles down to first principles.
-
-My academic grounding in ${candMajor} from ${candSchool} instilled a lifelong habit of continuous learning. When faced with an unfamiliar toolchain or architectural paradigm, I dive in hands-on by building experimental prototypes and stress-testing edge cases.
-
-Outside of technical work, I recharge by restoring analog synthesizers, exploring astronomy, and trail running. I thrive in engineering cultures that celebrate intellectual humility, autonomous ownership, and thoughtful code craft without unnecessary bureaucracy.`;
-        } else {
-          draftText = `Beyond my technical experience and verified credentials in ${candMajor} from ${candSchool}, I am someone who values craft integrity, empathy, and sustainable engineering velocity. I believe durable software is built when teams take pride in maintainability and treat thorough documentation as an act of kindness to future teammates.
-
-I approach collaboration with an open mind, welcoming constructive critique and cross-functional debate. To me, being a great teammate means celebrating mutual wins, jumping in to debug outages without pointing fingers, and staying humble in the face of complex problems.
-
-When offline, I enjoy trail running, exploring indie bookstores, and volunteering at community STEM hackathons. I am looking for a team culture grounded in transparent communication, high trust, and building products with lasting social utility.`;
-        }
-
+      if (action === 'draft' && !`${currentText} ${customInstruction}`.trim()) {
         return res.json({
-          narrative: draftText,
           action,
-          modelUsed: model,
-          fallbackMode: true,
+          needsInput: true,
+          followUpQuestion: 'What matters most to you in how you work, connect with people, or spend your time—and is there a small example that shows it? Share it however it comes to mind; I will help you find the words.',
         });
-      } else if (action === 'polish') {
-        const text = currentText.trim();
-        const polished = text.length > 20
-          ? `${text}\n\nWhat matters most to me is being part of a team with high psychological safety, intellectual humility, and a shared pride in craft.`
-          : `Beyond my technical degree in ${candMajor} from ${candSchool}, I am dedicated to building sustainable, user-respecting software with teams that champion empathy, open communication, and blameless retrospectives. When offline, I enjoy hiking, reading, and exploring local coffee shops.`;
+      }
+      if (action === 'draft' || action === 'polish') {
+        return res.status(503).json({ error: 'The About Me assistant is temporarily unavailable.' });
+      }
 
-        return res.json({
-          narrative: polished,
-          action,
-          modelUsed: model,
-          fallbackMode: true,
-        });
-      } else {
-        // Heuristic evaluate checklist
+      // Heuristic checklist evaluation is informational only and never creates profile text.
+      {
         const lower = currentText.toLowerCase();
         const evalList = checklistCriteria.map((item) => {
           let covered = false;
@@ -2426,8 +2785,8 @@ When offline, I enjoy trail running, exploring indie bookstores, and volunteerin
           checklist: evalList,
           overallScore: Math.round((coveredCount / evalList.length) * 100),
           summaryTip: coveredCount === 5
-            ? 'Outstanding narrative! All 5 personal pillars are covered with warmth and balance.'
-            : 'Looking good! Add a sentence covering the remaining checklist items for maximum recruiter resonance.',
+            ? 'Your narrative touches on all five areas.'
+            : 'Consider sharing another specific detail in your own words.',
           modelUsed: model,
           fallbackMode: true,
         });
@@ -2448,18 +2807,73 @@ When offline, I enjoy trail running, exploring indie bookstores, and volunteerin
     return arr;
   }
 
-  // Gemini Employer Natural Language Search API Endpoint
+  app.post('/api/gemini/employer-chat', ...productionEmployerChatAccess, async (req, res) => {
+    try {
+      const { messages } = req.body;
+      if (
+        !Array.isArray(messages) ||
+        messages.length === 0 ||
+        messages.length > 20 ||
+        messages.some(
+          (message: unknown) =>
+            !isRecord(message) ||
+            (message.role !== 'user' && message.role !== 'model') ||
+            typeof message.content !== 'string' ||
+            message.content.length > 4000
+        )
+      ) {
+        return res.status(400).json({ error: 'Provide 1 to 20 messages, each 4,000 characters or fewer.' });
+      }
+      if (!ai) {
+        return res.status(503).json({ error: 'The employer assistant is temporarily unavailable.' });
+      }
+
+      const response = await ai.models.generateContent({
+        model: 'gemini-3.8-flash',
+        contents: messages.map((message: { role: string; content: string }) => ({
+          role: message.role === 'user' ? 'user' : 'model',
+          parts: [{ text: message.content }],
+        })),
+        config: {
+          systemInstruction: `You are the RAMPED assistant for approved employers. Be helpful, conversational, and creative when explaining how to use the platform or refine a candidate search. You may answer general questions about RAMPED and help employers express explicit role, degree, institution, and skill requirements clearly. Do not select, rank, invent, or describe candidates; the separate credential search returns only exact profile matches. Never imply that a candidate has a credential or skill unless it is verified in their profile. Do not invent RAMPED policies, prices, or plan entitlements; say when you cannot verify a detail. About Me narratives belong to candidates: do not write personal claims on a candidate's behalf.`,
+          temperature: 0.6,
+        },
+      });
+      if (!response.text?.trim()) {
+        return res.status(503).json({ error: 'The employer assistant returned no response. Please try again.' });
+      }
+      return res.json({ text: response.text.trim() });
+    } catch (err: any) {
+      console.error('Employer assistant error:', err);
+      return res.status(500).json({ error: 'The employer assistant could not complete this request.' });
+    }
+  });
+
+  // Candidate selection is exact and deterministic; Gemini cannot broaden the requested criteria.
   app.post('/api/gemini/employer-search', ...productionEmployerAccess, async (req, res) => {
     try {
-      const { prompt, candidates: submittedCandidates = [] } = req.body;
-      const model = 'gemini-3.8-flash';
+      const { criteria, candidates: submittedCandidates = [] } = req.body;
 
-      if (typeof prompt !== 'string' || !prompt.trim() || prompt.length > 2000) {
-        return res.status(400).json({ error: 'A search prompt of 2,000 characters or fewer is required.' });
+      if (!isRecord(criteria)) {
+        return res.status(400).json({ error: 'Provide structured candidate search criteria.' });
+      }
+      if (!isExactCredentialCriteria(criteria)) {
+        return res.status(400).json({ error: 'Search criteria contain invalid values.' });
+      }
+      const normalizedCriteria: ExactCredentialCriteria = criteria;
+      if (
+        !normalizedCriteria.roles.length &&
+        !normalizedCriteria.degrees.length &&
+        !normalizedCriteria.institutions.length &&
+        !normalizedCriteria.skills.length &&
+        !normalizedCriteria.location &&
+        normalizedCriteria.minimumYearsExperience === null
+      ) {
+        return res.status(400).json({ error: 'Enter at least one role, credential, skill, location, or experience requirement.' });
       }
 
       // Filter only active, verified candidates (RAMPED 14/30 rule)
-      let candidates = submittedCandidates;
+      let candidates: any[] = submittedCandidates;
       if (process.env.NODE_ENV === 'production') {
         if (!supabaseAdmin) {
           return res.status(503).json({ error: 'Marketplace storage is not configured.' });
@@ -2472,145 +2886,49 @@ When offline, I enjoy trail running, exploring indie bookstores, and volunteerin
           .eq('is_snoozed', false)
           .gte('last_check_in_at', new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString());
         if (candidateError) throw candidateError;
-        candidates = (candidateRows || []).map((record) => profileRecordToCandidate(record, false));
+        candidates = candidateRows || [];
       }
 
-      const eligiblePool = candidates.filter(
-        (c: any) =>
-          c.verificationStatus === 'verified' &&
-          (c.simulatedDaysInactive === undefined || c.simulatedDaysInactive < 14) &&
-          c.lifecycleStatus !== 'archived' &&
-          c.lifecycleStatus !== 'deleted'
+      const eligiblePool = candidates
+        .map((record: any) => ({
+          record,
+          candidate: process.env.NODE_ENV === 'production'
+            ? profileRecordToCandidate(record, false)
+            : record,
+        }))
+        .filter(({ record, candidate }: any) =>
+          process.env.NODE_ENV === 'production'
+            ? record.verification_status === 'verified' &&
+              !record.is_snoozed &&
+              new Date(record.last_check_in_at).getTime() >= Date.now() - 14 * 24 * 60 * 60 * 1000
+            : candidate.verificationStatus === 'verified' &&
+              !candidate.isSnoozed &&
+              (candidate.simulatedDaysInactive === undefined || candidate.simulatedDaysInactive < 14) &&
+              candidate.lifecycleStatus !== 'archived' &&
+              candidate.lifecycleStatus !== 'deleted'
+        );
+
+      const exactMatches = shuffleArray(
+        eligiblePool.filter(({ candidate }: any) =>
+          matchesExactCredentialCriteria(candidate, normalizedCriteria)
+        )
       );
-
-      const promptLower = prompt.toLowerCase();
-
-      // If Gemini API is available, ask Gemini to parse and evaluate
-      if (ai) {
-        try {
-          const candidateBriefs = eligiblePool.map((c: any) => ({
-            id: c.id,
-            name: c.name,
-            categories: c.targetCategories,
-            degree: `${c.degreeTitle} from ${c.institution}`,
-            degreeType: c.degreeType,
-            remote: c.remotePreference,
-            location: c.location,
-            skills: c.skills,
-            aboutMe: c.aboutMe,
-            bio: c.bio,
-          }));
-
-          const systemPrompt = `You are the Talent Matchmaker on RAMPED.
-An employer is searching for candidates in plain natural language.
-Your job:
-1. Understand the employer's request: roles, degree levels, skills, remote preference, and personality/values reflected in their 'About Me'.
-2. Select candidate IDs matching their criteria.
-3. Bring up a list of ten candidates if there are ten available in the pool (select the closest matching candidates first, filling up to 10 with relevant active candidates from the pool).
-4. Output strictly valid JSON with this schema:
-{
-  "matchedIds": ["cand-001", "cand-002", ...],
-  "extractedCriteria": {
-    "role": "e.g. Distributed Systems Engineer",
-    "degree": "e.g. Bachelor's or Master's",
-    "remote": "e.g. Remote Only",
-    "skills": ["Rust", "TypeScript"]
-  }
-}`;
-
-          // Try gemini-3.8-flash or fallback model
-          let responseText = '';
-          const candidateModels = [model, 'gemini-3.1-flash-lite', 'gemini-flash-latest'].filter(Boolean);
-          for (const m of candidateModels) {
-            try {
-              const response = await ai.models.generateContent({
-                model: m,
-                contents: `Employer Search Prompt: "${prompt}"\n\nCandidate Pool:\n${JSON.stringify(
-                  candidateBriefs
-                )}`,
-                config: {
-                  systemInstruction: systemPrompt,
-                  responseMimeType: 'application/json',
-                  temperature: 0.3,
-                },
-              });
-              responseText = response.text || '';
-              if (responseText) break;
-            } catch (err: any) {
-              console.warn(`Model ${m} failed, trying next:`, err?.message);
-            }
-          }
-
-          if (responseText) {
-            const parsed = JSON.parse(responseText);
-            let matchedIds = parsed.matchedIds || [];
-
-            // Ensure only existing IDs
-            const validMatchedIds = matchedIds.filter((id: string) =>
-              eligiblePool.some((c: any) => c.id === id)
-            );
-
-            // If fewer than 10 matched but pool has more, fill with remaining pool candidates
-            const remainingPool = eligiblePool
-              .filter((c: any) => !validMatchedIds.includes(c.id))
-              .map((c: any) => c.id);
-
-            let finalIds = [...validMatchedIds];
-            if (finalIds.length < 10 && remainingPool.length > 0) {
-              const needed = Math.min(10 - finalIds.length, remainingPool.length);
-              finalIds.push(...shuffleArray(remainingPool).slice(0, needed));
-            }
-
-            // RAMPED MANDATE: Randomize the matched list using Fisher-Yates pure shuffle for fairness
-            const randomizedIds = shuffleArray(finalIds);
-
-            return res.json({
-              matchedCandidateIds: randomizedIds,
-              extractedCriteria: parsed.extractedCriteria || {},
-              modelUsed: model,
-            });
-          }
-        } catch (apiErr: any) {
-          console.warn('Gemini employer search API failed, falling back to heuristic matcher:', apiErr?.message);
+      const tier = res.locals.billingAccount?.subscription_tier;
+      const matches = exactMatches.map(({ record, candidate }: any) => {
+        if (process.env.NODE_ENV !== 'production') return candidate;
+        const safeCandidate = profileRecordToCandidate(record, true);
+        if (tier !== 'tier2') {
+          safeCandidate.phone = '';
+          safeCandidate.credentialDocumentUrl = '';
+          safeCandidate.credentialOcrData = undefined;
         }
-      }
-
-      // Contextual Heuristic Matcher Fallback: Bring up a list of ten if there is ten
-      const scoredCandidates = eligiblePool.map((c: any) => {
-        const fullText = `${c.name} ${c.targetCategories?.join(' ')} ${c.degreeTitle} ${
-          c.institution
-        } ${c.skills?.join(' ')} ${c.aboutMe || ''} ${c.bio || ''} ${c.location} ${c.remotePreference}`.toLowerCase();
-
-        const keywords = promptLower.split(/\s+/).filter((w) => w.length > 2);
-        let score = 0;
-        for (const kw of keywords) {
-          if (fullText.includes(kw)) score += 1;
-        }
-        return { id: c.id, score };
+        return safeCandidate;
       });
 
-      scoredCandidates.sort((a: { score: number }, b: { score: number }) => b.score - a.score);
-      const topMatches = scoredCandidates.filter((item: { score: number }) => item.score > 0).map((item: { id: string }) => item.id);
-
-      // Target list of ten: if there are ten or more in the pool, make sure we return 10
-      let poolOfTen = [...topMatches];
-      if (poolOfTen.length < 10) {
-        const remaining = eligiblePool
-          .filter((c: any) => !poolOfTen.includes(c.id))
-          .map((c: any) => c.id);
-        const needed = Math.min(10 - poolOfTen.length, remaining.length);
-        poolOfTen.push(...shuffleArray(remaining).slice(0, needed));
-      }
-
-      const randomizedIds = shuffleArray(poolOfTen.slice(0, 10));
-
       return res.json({
-        matchedCandidateIds: randomizedIds,
-        extractedCriteria: {
-          query: prompt,
-        },
-        modelUsed: model,
-        fallbackMode: true,
+        matchedCandidateIds: matches.map((candidate: any) => candidate.id),
+        matchedCandidates: matches,
+        criteria: normalizedCriteria,
       });
     } catch (err: any) {
       console.error('Employer search route error:', err);
